@@ -19,11 +19,16 @@ With FetchContent:
 include(FetchContent)
 FetchContent_Declare(k3sm_sdk
   GIT_REPOSITORY https://github.com/k3sm-io/k3sm-sdk-cpp.git
-  GIT_TAG <commit sha>
-  GIT_SHALLOW TRUE)
+  GIT_TAG 0123456789abcdef0123456789abcdef01234567  # v1.0.0
+  )
 FetchContent_MakeAvailable(k3sm_sdk)
 target_link_libraries(your_target PRIVATE k3sm::sdk)
 ```
+
+Pin the full 40-character commit sha and keep the release tag in a comment
+beside it. Do not add `GIT_SHALLOW`: CMake shallow-fetches only a tag or a
+branch name, so it cannot fetch a sha. The sha and tag above are a placeholder
+for the format; use the sha of the release you want.
 
 From an installed copy:
 

@@ -19,8 +19,15 @@ add_library(k3sm_sdk INTERFACE)
 add_library(k3sm::sdk ALIAS k3sm_sdk)
 set_target_properties(k3sm_sdk PROPERTIES EXPORT_NAME sdk)
 target_compile_features(k3sm_sdk INTERFACE cxx_std_20)
+
+# k3sm/version.hpp is generated from the project() VERSION above, so the CMake
+# version is the one source of the SDK version.
+set(K3SM_SDK_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+configure_file(include/k3sm/version.hpp.in
+  "${K3SM_SDK_GENERATED_DIR}/k3sm/version.hpp" @ONLY)
 target_include_directories(k3sm_sdk INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${K3SM_SDK_GENERATED_DIR}>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 # Tests build only when this is the top-level project, so a consumer that
@@ -31,7 +38,10 @@ option(K3SM_SDK_INSTALL "Generate the k3sm SDK install rules" ${PROJECT_IS_TOP_L
 if(K3SM_SDK_INSTALL)
   set(K3SM_SDK_CMAKE_DIR "${CMAKE_INSTALL_DATADIR}/cmake/k3sm-sdk")
   install(TARGETS k3sm_sdk EXPORT k3sm-sdk-targets)
-  install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+  install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    PATTERN "*.in" EXCLUDE)
+  install(FILES "${K3SM_SDK_GENERATED_DIR}/k3sm/version.hpp"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/k3sm")
   install(EXPORT k3sm-sdk-targets
     NAMESPACE k3sm::
     DESTINATION "${K3SM_SDK_CMAKE_DIR}")
@@ -40,8 +50,8 @@ if(K3SM_SDK_INSTALL)
     INSTALL_DESTINATION "${K3SM_SDK_CMAKE_DIR}")
   write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/k3sm-sdk-config-version.cmake"
-    COMPATIBILITY SameMinorVersion
-    ARCH_INDEPENDENT)
+    COMPATIBILITY SameMajorVersion
+    ARCH_INDEPENDENT)  # header-only: drop ARCH_INDEPENDENT when the compiled C shim ships
   install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/k3sm-sdk-config.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/k3sm-sdk-config-version.cmake"
