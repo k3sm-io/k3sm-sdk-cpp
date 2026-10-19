@@ -12,10 +12,11 @@
 #      find_package(k3sm-sdk CONFIG) and links k3sm::sdk
 #   3. build a consumer that uses FetchContent with no options from a git
 #      clone of this checkout and links k3sm::sdk
-#   4. shellcheck over every hack/**/*.sh
-#   5. every C and C++ file carries the Apache-2.0 header
-#   6. every file under .github/workflows/ is dormant (fully commented out)
-#   7. the dependency supply-chain check: its self-test, then the live tree
+#   4. the version check: tag, CMake version and generated header agree
+#   5. shellcheck over every hack/**/*.sh
+#   6. every C and C++ file carries the Apache-2.0 header
+#   7. every file under .github/workflows/ is dormant (fully commented out)
+#   8. the dependency supply-chain check: its self-test, then the live tree
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp="$(mktemp -d)"
@@ -88,8 +89,7 @@ project(consumer LANGUAGES CXX)
 include(FetchContent)
 FetchContent_Declare(k3sm_sdk
   GIT_REPOSITORY file://$src/.git
-  GIT_TAG $rev
-  GIT_SHALLOW TRUE)
+  GIT_TAG $rev)
 FetchContent_MakeAvailable(k3sm_sdk)
 if(TARGET k3sm_sdk_version_test)
   message(FATAL_ERROR \"the SDK built its tests inside a consumer\")
@@ -99,6 +99,9 @@ cmake -S "$tmp/fetch" -B "$tmp/fetch/build" > "$tmp/fetch.log" \
 cmake --build "$tmp/fetch/build" > /dev/null
 "$tmp/fetch/build/consumer" || { echo "FAIL: the FetchContent consumer exited non-zero"; exit 1; }
 echo "    ok"
+
+echo "==> version (tag, CMake, generated header)"
+bash hack/verify-version.sh "$tmp/build-unity-OFF"
 
 echo "==> shellcheck (hack/**/*.sh)"
 command -v shellcheck >/dev/null || { echo "FAIL: shellcheck is not installed"; exit 1; }

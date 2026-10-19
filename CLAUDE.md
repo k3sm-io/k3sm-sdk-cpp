@@ -7,7 +7,7 @@ code from the other k3sm repositories.
 > User-facing behavior: `README.md`.
 
 **The client API is under design review.** Until that design lands, the repository carries only the
-build, packaging and test scaffolding and `include/k3sm/version.hpp`. Do not add client code ahead
+build, packaging and test scaffolding and the generated `k3sm/version.hpp`. Do not add client code ahead
 of the reviewed design.
 
 ## Layout
@@ -24,7 +24,7 @@ hack/ci.sh      # the full gate
 ```
 - `hack/ci.sh` is the gate: configure, build and ctest as separate sources and as a unity build;
   install and consume through `find_package(k3sm-sdk CONFIG)`; consume through FetchContent with no
-  options; shellcheck; license headers; dormant workflows; the dependency check.
+  options; the version check; shellcheck; license headers; dormant workflows; the dependency check.
 - **No third-party dependencies, ever.** `hack/verify-deps.sh` (run by `ci.sh`) fails on any
   `FetchContent_Declare`, `ExternalProject_Add`, CPM call or git submodule not listed in
   `hack/deps.allow` with an exact commit sha, and the allow file is empty.
@@ -34,8 +34,14 @@ hack/ci.sh      # the full gate
 - **Unity-build safe.** No anonymous namespaces, no `static` free functions or variables at
   namespace scope in a header: functions are `inline`, constants `inline constexpr`, all in a named
   namespace (`k3sm::sdk`).
-- **A consumer needs no options.** FetchContent with `GIT_REPOSITORY`, `GIT_TAG` and
-  `GIT_SHALLOW TRUE`, then `FetchContent_MakeAvailable`, gives `k3sm::sdk` and builds nothing else.
+- **A consumer needs no options.** FetchContent with `GIT_REPOSITORY` and `GIT_TAG <full 40-hex
+  commit sha>` (the release tag in a comment beside it, for example `# v1.0.0`), then
+  `FetchContent_MakeAvailable`, gives `k3sm::sdk` and builds nothing else. Never `GIT_SHALLOW`: CMake
+  shallow-fetches only a tag or a branch, not a sha.
+- **One version source.** The `project()` VERSION in `CMakeLists.txt` generates
+  `k3sm/version.hpp` from `include/k3sm/version.hpp.in`; never edit a copy by hand. The package
+  version is `SameMajorVersion`; `ARCH_INDEPENDENT` stays only while the SDK is header-only.
+  `hack/verify-version.sh` checks that the git tag, the CMake version and the generated header agree.
 - Every C and C++ file starts with the Apache-2.0 header in `hack/boilerplate/boilerplate.cpp.txt`;
   `ci.sh` checks it. CMake and shell files carry the two-line `Copyright` and
   `SPDX-License-Identifier` comment.
