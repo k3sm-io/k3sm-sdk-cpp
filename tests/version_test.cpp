@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+#include <k3sm/budget.hpp>
 #include <k3sm/version.hpp>
 
 #include <cstdio>

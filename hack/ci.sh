@@ -17,8 +17,27 @@
 #   6. every C and C++ file carries the Apache-2.0 header
 #   7. every file under .github/workflows/ is dormant (fully commented out)
 #   8. the dependency supply-chain check: its self-test, then the live tree
+#   9. the vendored page fixtures match their SHA256SUMS
+#      (hack/verify-fixtures.sh, after its self-test)
+#
+# A stage name as the first argument runs that stage alone:
+#   --reader    the page reader: the fixture check, then the reader tests
+#               (golden and negative fixtures, layout, torn reads) built and
+#               run as separate sources and as a unity build, under the
+#               sanitizers where the toolchain supports them
+#   --notifier, --cshim, --stress, --linux-vm
+#               placeholders until their parts of the SDK land
 set -euo pipefail
 cd "$(dirname "$0")/.."
+stage="${1:-}"
+case "$stage" in
+	--notifier|--cshim|--stress|--linux-vm)
+		echo "==> ${stage#--}"
+		echo "    not yet implemented"
+		exit 0 ;;
+	""|--reader) ;;
+	*) echo "usage: hack/ci.sh [--reader|--notifier|--cshim|--stress|--linux-vm]"; exit 2 ;;
+esac
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 jobs="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)"
@@ -27,26 +46,54 @@ for tool in cmake ctest git; do
 	command -v "$tool" >/dev/null || { echo "FAIL: $tool is not installed"; exit 1; }
 done
 
+# build_and_test [ctest args...]: configure, build and ctest once as
+# separate sources and once as a unity build.
+build_and_test() {
+	local unity b san
+	for unity in OFF ON; do
+		b="$tmp/build-unity-$unity"
+		cmake -S . -B "$b" -DCMAKE_BUILD_TYPE=Debug -DCMAKE_UNITY_BUILD="$unity" > "$tmp/configure.log" \
+			|| { cat "$tmp/configure.log"; echo "FAIL: cmake configure (unity $unity)"; exit 1; }
+		grep -q 'K3SM_SDK_HAVE_SANITIZERS:INTERNAL=1' "$b/CMakeCache.txt" \
+			&& san="with sanitizers" || san="without sanitizers (unsupported here)"
+		cmake --build "$b" --parallel "$jobs"
+		ctest --test-dir "$b" --output-on-failure "$@"
+		echo "    ok (unity $unity, $san)"
+	done
+}
+
+verify_fixtures() {
+	echo "==> page fixtures (hack/verify-fixtures.sh)"
+	bash hack/verify-fixtures.sh --self-test
+	bash hack/verify-fixtures.sh
+}
+
+if [ "$stage" = --reader ]; then
+	verify_fixtures
+	echo "==> reader tests (ctest -L reader)"
+	build_and_test -L reader
+	echo "k3sm-sdk-cpp ci --reader: green"
+	exit 0
+fi
+
 echo "==> cmake configure, build, ctest"
-for unity in OFF ON; do
-	b="$tmp/build-unity-$unity"
-	cmake -S . -B "$b" -DCMAKE_BUILD_TYPE=Debug -DCMAKE_UNITY_BUILD="$unity" > "$tmp/configure.log" \
-		|| { cat "$tmp/configure.log"; echo "FAIL: cmake configure (unity $unity)"; exit 1; }
-	grep -q 'K3SM_SDK_HAVE_SANITIZERS:INTERNAL=1' "$b/CMakeCache.txt" \
-		&& san="with sanitizers" || san="without sanitizers (unsupported here)"
-	cmake --build "$b" --parallel "$jobs"
-	ctest --test-dir "$b" --output-on-failure
-	echo "    ok (unity $unity, $san)"
-done
+build_and_test
 
 echo "==> install and find_package(k3sm-sdk CONFIG)"
 cmake --install "$tmp/build-unity-OFF" --prefix "$tmp/prefix" > /dev/null
-[ -f "$tmp/prefix/include/k3sm/version.hpp" ] || { echo "FAIL: version.hpp was not installed"; exit 1; }
+for h in version.hpp budget.hpp budget_page.hpp helpers.hpp page_layout.hpp result.hpp snapshot.hpp; do
+	[ -f "$tmp/prefix/include/k3sm/$h" ] || { echo "FAIL: k3sm/$h was not installed"; exit 1; }
+done
 consumer() {
 	mkdir -p "$1"
 	cat > "$1/main.cpp" <<'CPP'
-#include <k3sm/version.hpp>
-int main() { return k3sm::sdk::version.major == K3SM_SDK_VERSION_MAJOR ? 0 : 1; }
+#include <k3sm/budget.hpp>
+int main() {
+    static_assert(k3sm::sdk::page_abi_major == 1);
+    auto page = k3sm::sdk::budget_page::open("/nonexistent/budget.v1.page");
+    if (page || page.error() != k3sm::sdk::error::not_found) return 1;
+    return k3sm::sdk::version.major == K3SM_SDK_VERSION_MAJOR ? 0 : 1;
+}
 CPP
 	printf '%s\n' "$2" > "$1/CMakeLists.txt"
 	cat >> "$1/CMakeLists.txt" <<'CMAKE'
@@ -135,5 +182,12 @@ echo "    ok"
 echo "==> dependency supply-chain (hack/verify-deps.sh)"
 bash hack/verify-deps.sh --self-test
 bash hack/verify-deps.sh
+
+verify_fixtures
+
+echo "==> placeholder stages (--notifier --cshim --stress --linux-vm)"
+for st in --notifier --cshim --stress --linux-vm; do
+	bash hack/ci.sh "$st" | sed 's/^/    /'
+done
 
 echo "k3sm-sdk-cpp ci: green"

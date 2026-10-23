@@ -18,6 +18,9 @@ limitations under the License.
 // version_test.cpp, and merged with it when the target builds as one unity
 // source, it proves the headers carry no per-file definitions that collide.
 
+#include <k3sm/budget.hpp>
 #include <k3sm/version.hpp>
 
-int k3sm_sdk_second_tu_major() { return k3sm::sdk::version.major; }
+int k3sm_sdk_second_tu_major() {
+    return k3sm::sdk::page_abi_major == 1 ? k3sm::sdk::version.major : -1;
+}
