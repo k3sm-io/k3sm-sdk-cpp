@@ -45,8 +45,8 @@ constexpr bool higher_is_worse(signal_id id) noexcept {
 
 // bytes_until returns how many bytes the signal can move, in its worsening
 // direction, before it reaches rung r: value - threshold for an *.available
-// signal, threshold - value for memory.swap, and 0 when the signal is at or
-// past the rung. It returns std::nullopt when the page holds no record of
+// signal, threshold - value for memory.compressor and memory.swap, and 0
+// when the signal is at or past the rung. It returns std::nullopt when the page holds no record of
 // the signal, the signal is not measured in bytes, or its value or that
 // rung's threshold is absent.
 constexpr std::optional<std::int64_t> bytes_until(const snapshot& s, signal_id signal,
