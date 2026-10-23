@@ -1,0 +1,242 @@
+{
+  "pageABIMajor": 1,
+  "pageABIMinor": 0,
+  "pageFileName": "budget.v1.page",
+  "defaultPagePath": "/var/lib/k3sm/budget/budget.v1.page",
+  "linuxPagePath": "/run/k3sm/budget/budget.v1.page",
+  "nodeBudgetAPIVersion": "budget.k3sm.io/v1alpha1",
+  "pageSize": 4096,
+  "pageBodyLimit": 3072,
+  "headerSize": 192,
+  "bodySize": 2120,
+  "magic": "K3SMBDGT",
+  "absent": -9223372036854775808,
+  "seqOffset": 64,
+  "notifyEpochOffset": 128,
+  "notifyWaitOffset": 128,
+  "notifyWaitBytes": 4,
+  "maxNodeNameBytes": 253,
+  "staleFactor": 3,
+  "observedAtResolution": "1s",
+  "readerRetries": 64,
+  "layout": "layout.v1.0.txt",
+  "codes": {
+    "band": [
+      "critical",
+      "standard",
+      "batch"
+    ],
+    "killMode": [
+      "auto",
+      "on",
+      "off"
+    ],
+    "killModeReason": [
+      "cold-start",
+      "observing",
+      "armed",
+      "policy-off",
+      "disarm-file"
+    ],
+    "level": [
+      "ok",
+      "warn",
+      "critical",
+      "evicting"
+    ],
+    "limitingResource": [
+      "memory",
+      "swapfs",
+      "nodefs",
+      "imagefs",
+      "pid",
+      "cpu"
+    ],
+    "platform": [
+      "darwin",
+      "linux"
+    ],
+    "signal": [
+      "memory.available",
+      "memory.compressor",
+      "memory.swap",
+      "swapfs.available",
+      "nodefs.available",
+      "imagefs.available",
+      "pid.available"
+    ],
+    "trend": [
+      "falling",
+      "steady",
+      "rising"
+    ],
+    "unit": [
+      "bytes",
+      "permille",
+      "count"
+    ]
+  },
+  "fixtures": [
+    {
+      "file": "darwin.v1.page",
+      "sha256": "7f044b76b7967099c13ac5575db3cca401dc9a2b6cf465d7815b8bbefda66e92",
+      "decodes": true,
+      "description": "the Darwin status golden (sampleDarwin) as a native Darwin page"
+    },
+    {
+      "file": "linux-producer.v1.page",
+      "sha256": "9679027e6a45f45f2751400bd6e6f9577859880cfe5d7f544dc34b7863c78cf2",
+      "decodes": true,
+      "description": "the Linux status golden (sampleLinux) as a Linux producer's page"
+    },
+    {
+      "file": "linux-guest.v1.page",
+      "sha256": "fa1275aa87e05093d6c516eea8f0195f7582dc548dfcee514bcea3a3fbfb6358",
+      "decodes": true,
+      "description": "a vm guest page: the Darwin host's page relayed to the guest, with the linux block as the guest section (sampleLinux's)"
+    },
+    {
+      "file": "absent.v1.page",
+      "sha256": "7fc7e8a541e2090b62ae7da0e36e48d810690a92657c4f2f8b0632773f02d483",
+      "decodes": true,
+      "description": "the Darwin page with every optional value absent (PageAbsent), no signals and no counters"
+    },
+    {
+      "file": "pattern.v1.page",
+      "sha256": "e1383456f7d2355eef0f9199e64786d818c6e764bc4fd4fae97335934b0a9a99",
+      "decodes": false,
+      "description": "raw: a valid header; every u64 and i64 word, seq and notifyEpoch included, holds 0x50415454\u003c\u003c32 | its own offset; each nodeName byte holds the low byte of its own offset; every other byte is zero"
+    }
+  ],
+  "negative": [
+    {
+      "name": "short",
+      "file": "negative/short.v1.page",
+      "sha256": "19fd8d9954feb717a656e9573d44055a941a21ebb9c53eb9db74b4f0ab85e7c9",
+      "error": "truncated"
+    },
+    {
+      "name": "bad-magic",
+      "file": "negative/bad-magic.v1.page",
+      "sha256": "58234510d13183b5c168498a5375ae7f20b9d3903186c909f7ca18fa11861bd1",
+      "error": "abiMismatch"
+    },
+    {
+      "name": "unknown-major",
+      "file": "negative/unknown-major.v1.page",
+      "sha256": "2700050226248eac2e69eab917b5d1a733f55a83518660e4f079bbfe5d837a1d",
+      "error": "abiMismatch"
+    },
+    {
+      "name": "body-size-below-known",
+      "file": "negative/body-size-below-known.v1.page",
+      "sha256": "bd8000168ac0df269762636382304f52c1716a4a059476feeca133e233e72188",
+      "error": "truncated"
+    },
+    {
+      "name": "odd-seq",
+      "file": "negative/odd-seq.v1.page",
+      "sha256": "8ab520fb20f636eb385cfa135dcc2aa430fb93eb0b68491c3d356b1ca93ec994",
+      "error": "torn"
+    },
+    {
+      "name": "node-name-too-long",
+      "file": "negative/node-name-too-long.v1.page",
+      "sha256": "49fc097dbd27ed0cf8eb035224d21065f3d2a805546de1b0d0784322d903c25b",
+      "error": "corrupt",
+      "encoderError": "nodeNameTooLong"
+    }
+  ],
+  "notifyVectors": [
+    {
+      "base": "darwin.v1.page",
+      "field": "level",
+      "value": 2,
+      "due": true
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "admit",
+      "value": 0,
+      "due": true
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "generation",
+      "value": 5,
+      "due": true
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "signals[0].warnThreshold",
+      "value": 3221225472,
+      "due": true
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "signals[1].criticalRelease",
+      "value": 660,
+      "due": true
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "signals[3].evictSoftThreshold",
+      "value": 15032385536,
+      "due": true
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "signals[4].evictHardRelease",
+      "value": -9223372036854775808,
+      "due": true
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "signals[0].value",
+      "value": 5368709120,
+      "due": false
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "signals[0].trend",
+      "value": 3,
+      "due": false
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "observedAt",
+      "value": 1792411201,
+      "due": false
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "capacity.swapUsedBytes",
+      "value": 2147483648,
+      "due": false
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "darwin.vmPressureLevel",
+      "value": 2,
+      "due": false
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "counters[2].evictionsTotal",
+      "value": 6,
+      "due": false
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "killMode.armingEpisodes",
+      "value": 3,
+      "due": false
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "recommendation.safeAdditionalBytes",
+      "value": 2147483648,
+      "due": false
+    }
+  ]
+}

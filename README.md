@@ -5,9 +5,9 @@ A low-latency C++ client for the node pressure and headroom API of
 Silicon. It is for programs that run on a k3sm node and need to react to that
 node's resource pressure and headroom quickly.
 
-**Status: the client API is being designed.** This repository holds the build,
-packaging and test scaffolding only. The one public header today is
-`k3sm/version.hpp`; nothing here talks to a node yet.
+**Status: the page reader is in.** The SDK reads the node budget page, ABI
+major 1: open it, take a stable snapshot, and decide from it. Change
+notification, the C ABI shim and the dump tool come next.
 
 ## Use it
 
@@ -44,6 +44,75 @@ target_link_libraries(your_target PRIVATE k3sm::sdk)
 Pulled in by another project, the SDK builds no tests and adds no install
 rules; set `K3SM_SDK_BUILD_TESTS` or `K3SM_SDK_INSTALL` to `ON` to change that.
 
+## API
+
+Include `<k3sm/budget.hpp>` for everything, or the headers one by one:
+
+| header | what it holds |
+|---|---|
+| `k3sm/budget_page.hpp` | `budget_page`, the read-only mapping and its seqlock reader |
+| `k3sm/snapshot.hpp` | `snapshot`, one stable copy of every page field, and the code enums |
+| `k3sm/helpers.hpp` | `admit_ok`, `bytes_until`, `batch_slots` |
+| `k3sm/page_layout.hpp` | the page ABI: `page_abi_major`, the paths, sizes and field offsets |
+| `k3sm/result.hpp` | `error` and `result<T, E>` |
+| `k3sm/version.hpp` | the SDK version, `K3SM_SDK_VERSION_{MAJOR,MINOR,PATCH}` |
+
+Everything is in namespace `k3sm::sdk`.
+
+```cpp
+#include <k3sm/budget.hpp>
+
+namespace sdk = k3sm::sdk;
+
+auto page = sdk::budget_page::open(sdk::default_page_path());
+if (!page) {
+    // page.error() is error::not_found (with sys_errno()) or error::truncated:
+    // no page on this node, so fall back to your own sizing.
+    return own_sizing();
+}
+auto s = page->read();
+if (!s) {
+    return own_sizing();  // abi_mismatch, truncated, corrupt, torn or stale
+}
+if (sdk::admit_ok(*s)) {
+    cap = std::min(cap, sdk::batch_slots(*s, slot_bytes));
+}
+```
+
+- `budget_page::open(const char* path)` maps the page read-only. The page
+  stays mapped until the `budget_page` is destroyed; it is move-only.
+- `page.read()` copies every field under the page's seqlock and returns
+  `result<snapshot>`. It throws nothing, allocates nothing and never reads the
+  environment. `page.read_at(now_unix_seconds)` is the same read with the
+  staleness check made against a time you pass.
+- Errors (`error::kind`): `not_found` (no page or no access; `sys_errno()` has
+  the errno), `abi_mismatch` (bad magic, an unknown ABI major or header size, or
+  a code this SDK's tables do not hold), `truncated` (a file shorter than the
+  header says, or a body shorter than this SDK knows), `corrupt` (a field out
+  of its range), `torn` (no stable copy after `reader_retries` attempts, 64),
+  `stale` (the observation is older than `stale_factor`, 3, writer periods).
+- A value the producer could not sample is `std::nullopt`. The `darwin` block
+  is present on a macOS page, `linux_` on a Linux page and on a vm guest's
+  page. Enumerators that would clash with a keyword or a compiler macro carry
+  a trailing underscore (`platform::linux_`, `kill_mode::auto_`).
+- A page of a newer minor of ABI major 1 reads up to the fields this SDK
+  knows. A page of another major is `abi_mismatch`, and a new major also
+  changes the file name, so an older SDK finds no page instead of misreading
+  one.
+- `default_page_path()` is `/var/lib/k3sm/budget/budget.v1.page` on macOS
+  (`darwin_page_path`) and `/run/k3sm/budget/budget.v1.page` elsewhere
+  (`linux_page_path`), fixed at compile time.
+- `admit_ok(s)` is false while the node refuses new work.
+  `bytes_until(s, signal, rung)` is how many bytes a byte-valued signal can
+  move toward a rung (0 at or past it, `std::nullopt` when the page cannot
+  say). `batch_slots(s, slot_bytes)` is how many more slots of that size fit
+  in the node's safe headroom (0 while it does not admit). Use it only to
+  lower your own limit.
+
+The page layout and its golden fixtures come from the k3sm `apis` repository;
+the copies under `tests/fixtures/page` are checked against their digests by
+`hack/verify-fixtures.sh`.
+
 ## Build and test
 
 ```sh
@@ -51,6 +120,7 @@ cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
 hack/ci.sh          # the full gate
+hack/ci.sh --reader # the page reader's tests alone
 ```
 
 Requirements: CMake 3.24 or later and a C++20 compiler (Apple clang from the

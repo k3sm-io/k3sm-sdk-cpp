@@ -1,0 +1,6 @@
+# The vendored page fixtures are compared byte for byte and digested in
+# page/SHA256SUMS: never convert line endings or merge them.
+page/** binary
+page/*.txt diff
+page/*.json diff
+page/SHA256SUMS diff
