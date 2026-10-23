@@ -6,9 +6,9 @@ code from the other k3sm repositories.
 
 > User-facing behavior: `README.md`.
 
-**The client API is under design review.** Until that design lands, the repository carries only the
-build, packaging and test scaffolding and the generated `k3sm/version.hpp`. Do not add client code ahead
-of the reviewed design.
+**The v1 page reader is in place** (`k3sm/budget.hpp`: `budget_page`, `snapshot`, the helpers). The change
+notifier, the C ABI shim and the dump tool are later steps; their `hack/ci.sh` stages are still
+placeholders. Build each one to the reviewed design, not ahead of it.
 
 ## Layout
 - **`include/k3sm/`**: the public headers. Everything public is in namespace `k3sm::sdk`.
