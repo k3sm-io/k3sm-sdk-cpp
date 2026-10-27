@@ -7,7 +7,9 @@
 #   1. cmake configure, build and ctest (C++20, warnings as errors, the tests
 #      under AddressSanitizer and UndefinedBehaviorSanitizer when the toolchain
 #      supports them), once as separate sources and once as a unity build
-#      (CMAKE_UNITY_BUILD), which merges the two test sources into one
+#      (CMAKE_UNITY_BUILD), which merges each test target's sources into one
+#      translation unit (the version test's two sources, version_test.cpp and
+#      second_tu.cpp, check the headers survive that)
 #   2. install into a temp prefix, then build a consumer that uses
 #      find_package(k3sm-sdk CONFIG) and links k3sm::sdk
 #   3. build a consumer that uses FetchContent with no options from a git

@@ -10,8 +10,8 @@
 #   2. an allowed dependency is fetched by GIT_REPOSITORY equal to the listed
 #      url and GIT_TAG equal to the listed sha, never a branch, tag or URL
 #      archive
-#   3. no CPM, no git submodules (.gitmodules), and no vendored copy of
-#      another project's CMake tree
+#   3. no CPM and no git submodules (.gitmodules); a vendored copy of another
+#      project's tree is not detected here and is caught in review
 #
 # With no dependencies the allow file holds only comments and every
 # FetchContent_Declare or ExternalProject_Add fails. Comments are stripped
