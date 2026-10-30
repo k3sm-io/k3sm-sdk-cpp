@@ -5,9 +5,10 @@ A low-latency C++ client for the node pressure and headroom API of
 Silicon. It is for programs that run on a k3sm node and need to react to that
 node's resource pressure and headroom quickly.
 
-**Status: the page reader and the change notifier are in.** The SDK reads the
-node budget page, ABI major 1: open it, take a stable snapshot, decide from it,
-and wait for the node to report a change. The C ABI shim and the dump tool come
+**Status: the page reader, the change notifier and the page writer are in.** The
+SDK reads the node budget page, ABI major 1: open it, take a stable snapshot,
+decide from it, and wait for the node to report a change. A producer other than
+k3sm can also publish the page with `page_writer`. The C ABI shim and the dump tool come
 next.
 
 ## Use it
@@ -55,6 +56,7 @@ Include `<k3sm/budget.hpp>` for everything, or the headers one by one:
 | `k3sm/change_notifier.hpp` | `change_notifier`, which waits for the page's change word to move |
 | `k3sm/snapshot.hpp` | `snapshot`, one stable copy of every page field, and the code enums |
 | `k3sm/helpers.hpp` | `admit_ok`, `bytes_until`, `batch_slots` |
+| `k3sm/page_writer.hpp` | `page_writer`, `encode_page` and `notify_due`: the seqlock writer for producers other than k3sm |
 | `k3sm/page_layout.hpp` | the page ABI: `page_abi_major`, the paths, sizes and field offsets |
 | `k3sm/result.hpp` | `error` and `result<T, E>` |
 | `k3sm/version.hpp` | the SDK version, `K3SM_SDK_VERSION_{MAJOR,MINOR,PATCH}` |

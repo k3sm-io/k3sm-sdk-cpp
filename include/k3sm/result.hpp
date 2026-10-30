@@ -17,7 +17,7 @@ limitations under the License.
 #ifndef K3SM_RESULT_HPP
 #define K3SM_RESULT_HPP
 
-// The reader's error type and a small result<T, E>, the std::expected shape
+// The SDK's error type and a small result<T, E>, the std::expected shape
 // for C++20 (std::expected is C++23). Nothing here throws or allocates.
 
 #include <cstdint>
@@ -30,8 +30,9 @@ limitations under the License.
 
 namespace k3sm::sdk {
 
-// error is why a page operation failed: one of the reader contract's codes,
-// and for not_found the errno of the failing system call.
+// error is why a page operation failed: one of the reader contract's codes
+// or one of the writer's, and for not_found and io the errno of the failing
+// system call.
 class error {
 public:
     // kind is the contract's error code. The values are stable.
@@ -51,6 +52,22 @@ public:
         torn = 5,
         // stale: now - observedAt above stale_factor writer periods.
         stale = 6,
+        // node_name_too_long: the writer was given a node name longer than
+        // max_node_name_bytes (the apis encoder error of the same name).
+        node_name_too_long = 7,
+        // invalid_snapshot: the writer was given a snapshot the layout cannot
+        // carry (an empty node name, a writer period below one second, a
+        // platform or level outside its table, too many slots, a platform
+        // block that does not match the platform).
+        invalid_snapshot = 8,
+        // invalid_argument: a writer argument is unusable (a buffer shorter
+        // than page_size, a lock file inside the page's directory).
+        invalid_argument = 9,
+        // writer_busy: another writer holds the page's writer lock.
+        writer_busy = 10,
+        // io: the writer could not open, grow, map or lock a file
+        // (sys_errno() says why).
+        io = 11,
     };
 
     constexpr error(kind k, int sys_errno = 0) noexcept : kind_(k), errno_(sys_errno) {}
@@ -58,7 +75,7 @@ public:
     // code returns the error's kind.
     constexpr kind code() const noexcept { return kind_; }
 
-    // sys_errno returns the errno behind a not_found error, 0 otherwise.
+    // sys_errno returns the errno behind a not_found or io error, 0 otherwise.
     constexpr int sys_errno() const noexcept { return errno_; }
 
     // name returns the contract name of the error, as the apis manifest
@@ -74,6 +91,11 @@ public:
         case corrupt: return "corrupt";
         case torn: return "torn";
         case stale: return "stale";
+        case node_name_too_long: return "nodeNameTooLong";
+        case invalid_snapshot: return "invalidSnapshot";
+        case invalid_argument: return "invalidArgument";
+        case writer_busy: return "writerBusy";
+        case io: return "io";
         }
         return "unknown";
     }
