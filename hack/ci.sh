@@ -27,17 +27,25 @@
 #               (golden and negative fixtures, layout, torn reads) built and
 #               run as separate sources and as a unity build, under the
 #               sanitizers where the toolchain supports them
-#   --notifier, --cshim, --stress, --linux-vm
+#   --notifier  the change notifier: the notifier tests (poll, timeout, and
+#               a spawned writer process waking the waiter through the
+#               notifyEpoch word and through a doorbell file) built and run
+#               as separate sources and as a unity build, under the
+#               sanitizers where the toolchain supports them
+#   --cshim, --stress, --linux-vm
 #               placeholders until their parts of the SDK land
+#
+# The bare gate runs the unit tests in stage 1 and the notifier tests, which
+# spawn a process, through the --notifier stage after stage 9.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 stage="${1:-}"
 case "$stage" in
-	--notifier|--cshim|--stress|--linux-vm)
+	--cshim|--stress|--linux-vm)
 		echo "==> ${stage#--}"
 		echo "    not yet implemented"
 		exit 0 ;;
-	""|--reader) ;;
+	""|--reader|--notifier) ;;
 	*) echo "usage: hack/ci.sh [--reader|--notifier|--cshim|--stress|--linux-vm]"; exit 2 ;;
 esac
 tmp="$(mktemp -d)"
@@ -78,12 +86,19 @@ if [ "$stage" = --reader ]; then
 	exit 0
 fi
 
-echo "==> cmake configure, build, ctest"
-build_and_test
+if [ "$stage" = --notifier ]; then
+	echo "==> notifier tests (ctest -L notifier)"
+	build_and_test -L notifier
+	echo "k3sm-sdk-cpp ci --notifier: green"
+	exit 0
+fi
+
+echo "==> cmake configure, build, ctest (unit; the notifier runs below)"
+build_and_test -LE notifier
 
 echo "==> install and find_package(k3sm-sdk CONFIG)"
 cmake --install "$tmp/build-unity-OFF" --prefix "$tmp/prefix" > /dev/null
-for h in version.hpp budget.hpp budget_page.hpp helpers.hpp page_layout.hpp result.hpp snapshot.hpp; do
+for h in version.hpp budget.hpp budget_page.hpp change_notifier.hpp helpers.hpp page_layout.hpp result.hpp snapshot.hpp; do
 	[ -f "$tmp/prefix/include/k3sm/$h" ] || { echo "FAIL: k3sm/$h was not installed"; exit 1; }
 done
 consumer() {
@@ -187,8 +202,11 @@ bash hack/verify-deps.sh
 
 verify_fixtures
 
-echo "==> placeholder stages (--notifier --cshim --stress --linux-vm)"
-for st in --notifier --cshim --stress --linux-vm; do
+echo "==> notifier (hack/ci.sh --notifier)"
+bash hack/ci.sh --notifier | sed 's/^/    /'
+
+echo "==> placeholder stages (--cshim --stress --linux-vm)"
+for st in --cshim --stress --linux-vm; do
 	bash hack/ci.sh "$st" | sed 's/^/    /'
 done
 

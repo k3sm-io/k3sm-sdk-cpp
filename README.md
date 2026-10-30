@@ -5,9 +5,10 @@ A low-latency C++ client for the node pressure and headroom API of
 Silicon. It is for programs that run on a k3sm node and need to react to that
 node's resource pressure and headroom quickly.
 
-**Status: the page reader is in.** The SDK reads the node budget page, ABI
-major 1: open it, take a stable snapshot, and decide from it. Change
-notification, the C ABI shim and the dump tool come next.
+**Status: the page reader and the change notifier are in.** The SDK reads the
+node budget page, ABI major 1: open it, take a stable snapshot, decide from it,
+and wait for the node to report a change. The C ABI shim and the dump tool come
+next.
 
 ## Use it
 
@@ -51,6 +52,7 @@ Include `<k3sm/budget.hpp>` for everything, or the headers one by one:
 | header | what it holds |
 |---|---|
 | `k3sm/budget_page.hpp` | `budget_page`, the read-only mapping and its seqlock reader |
+| `k3sm/change_notifier.hpp` | `change_notifier`, which waits for the page's change word to move |
 | `k3sm/snapshot.hpp` | `snapshot`, one stable copy of every page field, and the code enums |
 | `k3sm/helpers.hpp` | `admit_ok`, `bytes_until`, `batch_slots` |
 | `k3sm/page_layout.hpp` | the page ABI: `page_abi_major`, the paths, sizes and field offsets |
@@ -99,6 +101,27 @@ if (sdk::admit_ok(*s)) {
   knows. A page of another major is `abi_mismatch`, and a new major also
   changes the file name, so an older SDK finds no page instead of misreading
   one.
+- `change_notifier n(*page)` watches the page's `notifyEpoch` word, which the
+  node bumps only when the level, `admit`, a threshold or the generation
+  changes. `n.wait(timeout)` blocks until it moves (true) or the timeout
+  passes (false); `n.poll()` checks it without blocking; `n.epoch()` is the
+  last value seen. Several bumps before a wake are reported as one change. The
+  wait blocks on the word in the shared mapping (`os_sync_wait_on_address` on
+  macOS, `FUTEX_WAIT` on Linux). `change_notifier(page, doorbell_path)` also
+  takes a doorbell file, if the node provides one, as the fallback (kqueue on
+  macOS, inotify on Linux); `n.source()` says which one a wait uses. The page
+  must outlive the notifier. To act on every sample instead, call `read()` on
+  your own schedule.
+
+  ```cpp
+  sdk::change_notifier bell(*page);
+  while (running) {
+      if (bell.wait(std::chrono::seconds(1))) {
+          auto s = page->read();
+          if (s && s->level >= sdk::level::critical) shed_work();
+      }
+  }
+  ```
 - `default_page_path()` is `/var/lib/k3sm/budget/budget.v1.page` on macOS
   (`darwin_page_path`) and `/run/k3sm/budget/budget.v1.page` elsewhere
   (`linux_page_path`), fixed at compile time.
