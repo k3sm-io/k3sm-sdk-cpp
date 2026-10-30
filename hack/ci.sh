@@ -98,7 +98,7 @@ build_and_test -LE notifier
 
 echo "==> install and find_package(k3sm-sdk CONFIG)"
 cmake --install "$tmp/build-unity-OFF" --prefix "$tmp/prefix" > /dev/null
-for h in version.hpp budget.hpp budget_page.hpp change_notifier.hpp helpers.hpp page_layout.hpp result.hpp snapshot.hpp; do
+for h in version.hpp budget.hpp budget_page.hpp change_notifier.hpp helpers.hpp page_layout.hpp page_writer.hpp result.hpp snapshot.hpp; do
 	[ -f "$tmp/prefix/include/k3sm/$h" ] || { echo "FAIL: k3sm/$h was not installed"; exit 1; }
 done
 consumer() {

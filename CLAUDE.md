@@ -6,8 +6,8 @@ code from the other k3sm repositories.
 
 > User-facing behavior: `README.md`.
 
-**The v1 page reader and the change notifier are in place** (`k3sm/budget.hpp`: `budget_page`,
-`snapshot`, the helpers, `change_notifier`). The C ABI shim and the dump tool are later steps; their
+**The v1 page reader, the change notifier and the page writer are in place** (`k3sm/budget.hpp`: `budget_page`,
+`snapshot`, the helpers, `change_notifier`, `page_writer`). The C ABI shim and the dump tool are later steps; their
 `hack/ci.sh` stages are still placeholders. The notifier tests spawn a writer process, so they run in
 `hack/ci.sh --notifier` (ctest label `notifier`), not in the bare gate's unit ctest pass. Build each one to the reviewed design, not ahead of it.
 
