@@ -17,10 +17,11 @@ limitations under the License.
 #ifndef K3SM_BUDGET_HPP
 #define K3SM_BUDGET_HPP
 
-// The k3sm SDK in one include: the version, the page ABI, the page reader
-// and the helpers.
+// The k3sm SDK in one include: the version, the page ABI, the page reader,
+// the change notifier and the helpers.
 
 #include <k3sm/budget_page.hpp>
+#include <k3sm/change_notifier.hpp>
 #include <k3sm/helpers.hpp>
 #include <k3sm/page_layout.hpp>
 #include <k3sm/result.hpp>
