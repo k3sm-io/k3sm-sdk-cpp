@@ -18,7 +18,12 @@ limitations under the License.
 // the darwin golden's bytes but answers each load of seq from a script, so
 // a write that is always in progress (odd), or always moving between the
 // two loads, is torn after exactly reader_retries attempts, and one that
-// settles within them is read.
+// settles within them is read. Then the header line under a scripted
+// resume: a source whose first loads of the minor word see the header from
+// before a writer's resume and every other load sees the header after it,
+// so the reader pairs an old minor with a new body size, and the bounded
+// re-read of the header reads the page; a header that stays invalid is
+// reported after exactly header_retries attempts.
 
 #include <k3sm/budget.hpp>
 
@@ -115,6 +120,98 @@ void test_odd_one_attempt_too_many() {
     K3SM_CHECK(!r && r.error() == sdk::error::torn);
 }
 
+// rewritten_source serves page bytes, except that the first stale_loads
+// loads of the word holding the minor return stale_versions: the header
+// word as it was before a resume the reader's later loads see the end of.
+struct rewritten_source {
+    const std::string* page;
+    std::uint64_t stale_versions;
+    int stale_loads;
+    mutable int versions_loads = 0;
+    mutable int magic_loads = 0;
+
+    std::size_t size() const noexcept { return page->size(); }
+
+    std::uint64_t load(std::size_t offset, std::memory_order) const noexcept {
+        if (offset == sdk::page_offset::magic) {
+            ++magic_loads;
+        }
+        if (offset == sdk::page_offset::abi_major && versions_loads++ < stale_loads) {
+            return stale_versions;
+        }
+        std::uint64_t v = 0;
+        std::memcpy(&v, page->data() + offset, sizeof v);
+        return v;
+    }
+
+    void fence_acquire() const noexcept {}
+};
+
+void put_u64(std::string& page, std::size_t offset, std::uint64_t v) {
+    std::memcpy(page.data() + offset, &v, sizeof v);
+}
+
+std::uint64_t get_u64(const std::string& page, std::size_t offset) {
+    std::uint64_t v = 0;
+    std::memcpy(&v, page.data() + offset, sizeof v);
+    return v;
+}
+
+// versions_word is the word holding the major, the minor and the header size.
+std::uint64_t versions_word(std::uint16_t minor) {
+    return std::uint64_t{sdk::page_abi_major} | std::uint64_t{minor} << 16 |
+           std::uint64_t{sdk::page_header_size} << 32;
+}
+
+// A rollback (a minor-0 writer resuming a minor-1 page) lands between the
+// reader's load of the minor and its load of the body size: the first
+// attempt sees minor 1 with the minor-0 body, which is too short for it.
+// The reader loads the header again and reads the minor-0 page.
+void test_rollback_between_header_loads() {
+    std::string page = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
+    put_u64(page, sdk::page_offset::abi_major, versions_word(0));
+    put_u64(page, sdk::page_offset::body_size, sdk::page_body_size_minor0);
+    rewritten_source src{&page, versions_word(1), 1};
+    const auto r = sdk::detail::read_page(src, observed);
+    K3SM_CHECK(r.has_value());
+    if (r) {
+        K3SM_CHECK_EQ(r->abi_minor, 0u);
+        K3SM_CHECK_EQ(r->body_size, sdk::page_body_size_minor0);
+        K3SM_CHECK(!r->capacity.cpu_performance_cores.has_value());
+        K3SM_CHECK_EQ(r->node_name(), std::string_view("mac-worker-1"));
+    }
+    K3SM_CHECK_EQ(src.versions_loads, 2);
+}
+
+// The stale pairing is seen on every attempt but the last: still read.
+void test_rollback_settles_on_last_header_attempt() {
+    std::string page = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
+    put_u64(page, sdk::page_offset::abi_major, versions_word(0));
+    put_u64(page, sdk::page_offset::body_size, sdk::page_body_size_minor0);
+    rewritten_source src{&page, versions_word(1), sdk::detail::header_retries - 1};
+    const auto r = sdk::detail::read_page(src, observed);
+    K3SM_CHECK(r.has_value());
+    K3SM_CHECK_EQ(src.versions_loads, sdk::detail::header_retries);
+}
+
+// A header that is invalid on every load is reported, after the bound.
+void test_invalid_header_after_bound() {
+    std::string page = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
+    put_u64(page, sdk::page_offset::body_size, sdk::page_body_size_minor0);
+    rewritten_source short_body{&page, 0, 0};
+    const auto r = sdk::detail::read_page(short_body, observed);
+    K3SM_CHECK(!r && r.error() == sdk::error::truncated);
+    K3SM_CHECK_EQ(short_body.versions_loads, sdk::detail::header_retries);
+
+    std::string other = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
+    put_u64(other, sdk::page_offset::magic, get_u64(other, sdk::page_offset::magic) ^ 1);
+    rewritten_source bad_magic{&other, 0, 0};
+    const auto m = sdk::detail::read_page(bad_magic, observed);
+    K3SM_CHECK(!m && m.error() == sdk::error::abi_mismatch);
+    K3SM_CHECK_EQ(bad_magic.magic_loads, sdk::detail::header_retries);
+    K3SM_CHECK_EQ(bad_magic.versions_loads, 0);
+}
+
 }  // namespace torn_test
 
 int main() {
@@ -123,6 +220,9 @@ int main() {
     torn_test::test_settles_on_last_attempt();
     torn_test::test_settles_after_moving();
     torn_test::test_odd_one_attempt_too_many();
+    torn_test::test_rollback_between_header_loads();
+    torn_test::test_rollback_settles_on_last_header_attempt();
+    torn_test::test_invalid_header_after_bound();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "torn_test: %d failure(s)\n", k3sm_test::failures());
         return 1;

@@ -45,6 +45,7 @@ limitations under the License.
 // change.
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <climits>
@@ -361,6 +362,38 @@ inline bool preallocate(int fd, std::size_t current) noexcept {
     return ::fsync(fd) == 0 || errno == EINVAL;
 }
 
+// header_words is the number of 8-byte words of the header line a resume
+// rewrites: every word before seq.
+inline constexpr std::size_t header_words = page_offset::seq / 8;
+
+// resume_store_order is the order, as byte offsets, in which a resume
+// stores the header words. Readers check the header before their seqlock
+// copy and do not check it again, so seq cannot guard the rewrite; the
+// order keeps every intermediate header valid instead. A header is valid
+// when its bodySize is at least the body size of its abiMinor, and those
+// two fields are in separate words (the minor shares its word with the
+// major and the header size). The word that keeps the pair valid goes
+// first: the bodySize word when the body grows or stays (over an older
+// minor), the minor word when it shrinks (over a newer minor, a rollback).
+// The magic goes last, so a page that was not one before is not one until
+// the whole header line is in place.
+inline std::array<std::size_t, header_words> resume_store_order(bool shrinks) noexcept {
+    namespace off = page_offset;
+    constexpr std::size_t minor_word = off::abi_minor & ~std::size_t{7};
+    constexpr std::size_t size_word = off::body_size & ~std::size_t{7};
+    std::array<std::size_t, header_words> order{};
+    std::size_t n = 0;
+    for (std::size_t o = off::seq - 8; o > off::magic; o -= 8) {
+        if (o != minor_word && o != size_word) {
+            order[n++] = o;
+        }
+    }
+    order[n++] = shrinks ? minor_word : size_word;
+    order[n++] = shrinks ? size_word : minor_word;
+    order[n] = off::magic;
+    return order;
+}
+
 }  // namespace detail
 
 // encode_page writes the page of s into dst[0, page_size), deterministically,
@@ -527,17 +560,20 @@ private:
     // resume takes the page over, as the apis writer does: it continues seq
     // and notifyEpoch from a page of this major (an odd seq left by a writer
     // that died mid-write is moved past), takes the next generation, and
-    // writes this minor's header line, the magic last.
+    // writes this minor's header line in detail::resume_store_order, the
+    // magic last.
     void resume() noexcept {
         namespace off = page_offset;
         const std::uint64_t magic = detail::load(base_, off::magic);
         const std::uint64_t versions = detail::load(base_, off::abi_major);
         std::int64_t previous = 0;
+        bool shrinks = false;
         seq_ = 0;
         epoch_ = 0;
         if (magic == detail::page_magic_word() &&
             static_cast<std::uint16_t>(versions) == page_abi_major &&
             static_cast<std::uint32_t>(versions >> 32) == page_header_size) {
+            shrinks = static_cast<std::uint32_t>(detail::load(base_, off::body_size)) > page_body_size;
             seq_ = detail::load(base_, off::seq);
             epoch_ = detail::load(base_, off::notify_epoch);
             previous = static_cast<std::int64_t>(detail::load(base_, off::generation));
@@ -552,8 +588,7 @@ private:
         header.put(off::abi_major, std::uint64_t{page_abi_major} | std::uint64_t{page_abi_minor} << 16 |
                                        std::uint64_t{page_header_size} << 32);
         header.put(off::body_size, page_body_size);
-        for (std::size_t o = off::seq; o > 0;) {
-            o -= 8;
+        for (const std::size_t o : detail::resume_store_order(shrinks)) {
             detail::store(base_, o, header.w[o / 8], std::memory_order_release);
         }
         has_last_ = false;

@@ -486,6 +486,103 @@ void test_resume_odd_seq() {
     ::unlink(page.c_str());
 }
 
+// versions_word is the word holding the major, the minor and the header size.
+std::uint64_t versions_word(std::uint16_t minor) {
+    return std::uint64_t{sdk::page_abi_major} | std::uint64_t{minor} << 16 |
+           std::uint64_t{sdk::page_header_size} << 32;
+}
+
+// A reader that loads the header between any two of a resume's stores sees
+// an abiMinor and a bodySize that agree: the body size is at least that of
+// the minor. Readers check the header before the seqlock copy, so the
+// guard is the store order, not seq. The reader here knows a hypothetical
+// minor 2 that appends four words, as a newer SDK would; a rollback from it
+// (and from a page whose body is larger than any known minor's) stores the
+// minor word first, an upgrade the body size word.
+void test_resume_header_store_order() {
+    const std::uint32_t body_of[] = {sdk::page_body_size_minor0, sdk::page_body_size,
+                                     sdk::page_body_size + 32};
+    struct resume_case {
+        const char* name;
+        std::uint16_t minor;
+        std::uint32_t body;
+    };
+    const resume_case cases[] = {
+        {"rollback from a newer minor", 2, body_of[2]},
+        {"rollback from a body larger than any known minor", 2, 3000},
+        {"upgrade from minor 0", 0, body_of[0]},
+        {"same minor", sdk::page_abi_minor, body_of[sdk::page_abi_minor]},
+    };
+    std::string fresh(sdk::page_size, '\0');
+    put_u64(fresh, sdk::page_offset::magic, sdk::detail::page_magic_word());
+    put_u64(fresh, sdk::page_offset::abi_major, versions_word(sdk::page_abi_minor));
+    put_u64(fresh, sdk::page_offset::body_size, sdk::page_body_size);
+    for (const resume_case& c : cases) {
+        std::string page = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
+        page.resize(sdk::page_size, '\0');
+        put_u64(page, sdk::page_offset::abi_major, versions_word(c.minor));
+        put_u64(page, sdk::page_offset::body_size, c.body);
+
+        // Apply the resume's stores one at a time, reading the header after each.
+        const bool shrinks = c.body > sdk::page_body_size;
+        int stores = 0;
+        for (const std::size_t o : sdk::detail::resume_store_order(shrinks)) {
+            put_u64(page, o, get_u64(fresh, o));
+            ++stores;
+            const auto minor = static_cast<std::uint16_t>(get_u64(page, sdk::page_offset::abi_major) >> 16);
+            const auto body = static_cast<std::uint32_t>(get_u64(page, sdk::page_offset::body_size));
+            if (minor != c.minor && minor != sdk::page_abi_minor) {
+                std::fprintf(stderr, "%s: store %d: abiMinor %u is neither the old nor the new minor\n",
+                             c.name, stores, minor);
+                K3SM_CHECK(false);
+            } else if (body < body_of[minor]) {
+                std::fprintf(stderr, "%s: store %d: abiMinor %u with bodySize %u, below its %u\n", c.name,
+                             stores, minor, body, body_of[minor]);
+                K3SM_CHECK(false);
+            }
+        }
+        K3SM_CHECK_EQ(static_cast<std::size_t>(stores), sdk::detail::header_words);
+        K3SM_CHECK(page.compare(0, sdk::page_offset::seq, fresh, 0, sdk::page_offset::seq) == 0);
+    }
+    // Every header word is stored once, and the magic last.
+    for (const bool shrinks : {false, true}) {
+        const auto order = sdk::detail::resume_store_order(shrinks);
+        bool seen[sdk::detail::header_words] = {};
+        for (const std::size_t o : order) {
+            K3SM_CHECK(o % 8 == 0 && o < sdk::page_offset::seq && !seen[o / 8]);
+            seen[o / 8] = true;
+        }
+        K3SM_CHECK_EQ(order.back(), sdk::page_offset::magic);
+    }
+}
+
+// A writer resuming a page of a newer minor with a larger body takes it
+// over: the header is this minor's, and the page reads.
+void test_resume_rollback_page() {
+    const std::string page = page_path("rollback.page");
+    std::string bytes = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
+    bytes.resize(sdk::page_size, '\0');
+    put_u64(bytes, sdk::page_offset::abi_major, versions_word(2));
+    put_u64(bytes, sdk::page_offset::body_size, sdk::page_body_size + 32);
+    {
+        const int fd = ::open(page.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+        K3SM_CHECK(fd >= 0 && ::write(fd, bytes.data(), bytes.size()) == static_cast<ssize_t>(bytes.size()));
+        ::close(fd);
+    }
+    auto w = sdk::page_writer::open(page.c_str(), lock_path("rollback.lock").c_str());
+    K3SM_CHECK(w.has_value());
+    if (!w) {
+        return;
+    }
+    const std::string after = k3sm_test::read_file(page);
+    K3SM_CHECK_EQ(get_u64(after, sdk::page_offset::abi_major), versions_word(sdk::page_abi_minor));
+    K3SM_CHECK_EQ(get_u64(after, sdk::page_offset::body_size), std::uint64_t{sdk::page_body_size});
+    K3SM_CHECK(w->publish(golden("darwin.v1.page")).has_value());
+    const auto r = read_path(page);
+    K3SM_CHECK(r.has_value() && r->abi_minor == sdk::page_abi_minor);
+    ::unlink(page.c_str());
+}
+
 // A short file that is not a page grows in place to page_size and starts over.
 void test_short_file_grows_in_place() {
     const std::string page = page_path("short.page");
@@ -558,7 +655,7 @@ void test_wake_and_doorbell() {
 }
 
 void cleanup() {
-    for (const char* f : {"vectors.lock", "live.lock", "odd.lock", "short.lock", "wake.lock"}) {
+    for (const char* f : {"vectors.lock", "live.lock", "odd.lock", "rollback.lock", "short.lock", "wake.lock"}) {
         ::unlink(lock_path(f).c_str());
     }
     ::rmdir(page_dir().c_str());
@@ -577,6 +674,8 @@ int main() {
     writer_test::test_notify_vectors();
     writer_test::test_live_page();
     writer_test::test_resume_odd_seq();
+    writer_test::test_resume_header_store_order();
+    writer_test::test_resume_rollback_page();
     writer_test::test_short_file_grows_in_place();
     writer_test::test_wake_and_doorbell();
     writer_test::cleanup();
