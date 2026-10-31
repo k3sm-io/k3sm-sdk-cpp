@@ -32,20 +32,39 @@
 #               notifyEpoch word and through a doorbell file) built and run
 #               as separate sources and as a unity build, under the
 #               sanitizers where the toolchain supports them
-#   --cshim, --stress, --linux-vm
+#   --stress    the quality bar, in four parts:
+#               (i)   the torn-read stress (a writer thread at full speed
+#                     against reader threads) built and run under
+#                     ThreadSanitizer
+#               (ii)  the libFuzzer harness over arbitrary page bytes, a
+#                     bounded smoke (K3SM_SDK_FUZZ_SECONDS, default 30)
+#                     seeded from tests/fuzz/corpus and the page fixtures
+#               (iii) the whole test suite under AddressSanitizer and
+#                     UndefinedBehaviorSanitizer, as separate sources and as
+#                     a unity build
+#               (iv)  the benchmark, built optimized and run for one short
+#                     iteration (it prints the read and wake-to-read
+#                     latencies; it checks no threshold)
+#               libFuzzer is required. Apple clang ships no libFuzzer
+#               runtime, so the stage looks for an LLVM clang++
+#               (K3SM_SDK_FUZZ_CXX, then $CXX, then Homebrew's llvm) and
+#               fails, naming how to get one, when none links
+#               -fsanitize=fuzzer.
+#   --cshim, --linux-vm
 #               placeholders until their parts of the SDK land
 #
 # The bare gate runs the unit tests in stage 1 and the notifier tests, which
-# spawn a process, through the --notifier stage after stage 9.
+# spawn a process, through the --notifier stage after stage 9. It does not
+# run --stress.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 stage="${1:-}"
 case "$stage" in
-	--cshim|--stress|--linux-vm)
+	--cshim|--linux-vm)
 		echo "==> ${stage#--}"
 		echo "    not yet implemented"
 		exit 0 ;;
-	""|--reader|--notifier) ;;
+	""|--reader|--notifier|--stress) ;;
 	*) echo "usage: hack/ci.sh [--reader|--notifier|--cshim|--stress|--linux-vm]"; exit 2 ;;
 esac
 tmp="$(mktemp -d)"
@@ -90,6 +109,91 @@ if [ "$stage" = --notifier ]; then
 	echo "==> notifier tests (ctest -L notifier)"
 	build_and_test -L notifier
 	echo "k3sm-sdk-cpp ci --notifier: green"
+	exit 0
+fi
+
+# fuzz_cxx prints the first C++ compiler that links -fsanitize=fuzzer, or
+# nothing.
+fuzz_cxx() {
+	local c probe="$tmp/fuzz-probe"
+	mkdir -p "$probe"
+	cat > "$probe/probe.cpp" <<'CPP'
+#include <cstddef>
+#include <cstdint>
+extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t*, std::size_t) { return 0; }
+CPP
+	for c in "${K3SM_SDK_FUZZ_CXX:-}" "${CXX:-c++}" /opt/homebrew/opt/llvm/bin/clang++ /usr/local/opt/llvm/bin/clang++; do
+		if [ -z "$c" ] || ! command -v "$c" >/dev/null; then
+			continue
+		fi
+		if "$c" -std=c++20 -fsanitize=fuzzer,address,undefined "$probe/probe.cpp" -o "$probe/probe" >/dev/null 2>&1; then
+			command -v "$c"
+			return 0
+		fi
+	done
+}
+
+if [ "$stage" = --stress ]; then
+	echo "==> libFuzzer toolchain"
+	cxx="$(fuzz_cxx)"
+	if [ -z "$cxx" ]; then
+		echo "FAIL: no C++ compiler here links -fsanitize=fuzzer (libFuzzer)."
+		echo "      Apple clang ships no libFuzzer runtime. Install an LLVM clang (on macOS:"
+		echo "      'brew install llvm', found at \$(brew --prefix llvm)/bin/clang++; on Linux: the"
+		echo "      distribution's clang package) or point K3SM_SDK_FUZZ_CXX at one, then re-run."
+		exit 1
+	fi
+	echo "    $cxx ($("$cxx" --version | head -n 1))"
+
+	echo "==> (i) torn-read stress under ThreadSanitizer (ctest -L stress)"
+	b="$tmp/build-tsan"
+	cmake -S . -B "$b" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DK3SM_SDK_SANITIZER=thread -DK3SM_SDK_STRESS=ON \
+		> "$tmp/configure.log" || { cat "$tmp/configure.log"; echo "FAIL: cmake configure (ThreadSanitizer)"; exit 1; }
+	cmake --build "$b" --parallel "$jobs" --target k3sm_sdk_threads_stress_test
+	if ! TSAN_OPTIONS="halt_on_error=1 ${TSAN_OPTIONS:-}" ctest --test-dir "$b" --output-on-failure -V -L stress \
+		> "$tmp/stress.log" 2>&1; then
+		tail -n 60 "$tmp/stress.log"
+		echo "FAIL: the torn-read stress"
+		exit 1
+	fi
+	grep -E '^[0-9]+: (shared memory|negative control|page file)' "$tmp/stress.log" | sed 's/^[0-9]*: /    /' || true
+	echo "    ok"
+
+	echo "==> (ii) libFuzzer smoke over the page reader (${K3SM_SDK_FUZZ_SECONDS:-30} s)"
+	b="$tmp/build-fuzz"
+	cmake -S . -B "$b" -DCMAKE_CXX_COMPILER="$cxx" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DK3SM_SDK_FUZZ=ON \
+		> "$tmp/configure.log" || { cat "$tmp/configure.log"; echo "FAIL: cmake configure (libFuzzer)"; exit 1; }
+	cmake --build "$b" --parallel "$jobs" --target k3sm_sdk_page_fuzz
+	mkdir -p "$tmp/fuzz-corpus" "$tmp/fuzz-artifacts"
+	if ! "$b/tests/k3sm_sdk_page_fuzz" -max_total_time="${K3SM_SDK_FUZZ_SECONDS:-30}" -max_len=8192 -timeout=10 \
+		-print_final_stats=1 -artifact_prefix="$tmp/fuzz-artifacts/" \
+		"$tmp/fuzz-corpus" tests/fuzz/corpus tests/fixtures/page > "$tmp/fuzz.log" 2>&1; then
+		tail -n 40 "$tmp/fuzz.log"
+		mkdir -p build/fuzz-artifacts
+		cp "$tmp"/fuzz-artifacts/* build/fuzz-artifacts/ 2>/dev/null || true
+		echo "FAIL: the page fuzzer found a failing input (kept under build/fuzz-artifacts)"
+		exit 1
+	fi
+	grep -E '^(Done|stat::number_of_executed_units|stat::new_units_added)' "$tmp/fuzz.log" | sed 's/^/    /'
+	echo "    ok"
+
+	echo "==> (iii) the test suite under AddressSanitizer and UndefinedBehaviorSanitizer"
+	build_and_test
+	for unity in OFF ON; do
+		grep -q 'K3SM_SDK_HAVE_SANITIZERS:INTERNAL=1' "$tmp/build-unity-$unity/CMakeCache.txt" \
+			|| { echo "FAIL: this toolchain cannot build the tests with -fsanitize=address,undefined"; exit 1; }
+	done
+
+	echo "==> (iv) benchmark, one short iteration (optimized, no sanitizers)"
+	b="$tmp/build-bench"
+	cmake -S . -B "$b" -DCMAKE_BUILD_TYPE=Release -DK3SM_SDK_SANITIZER=none -DK3SM_SDK_STRESS=ON \
+		> "$tmp/configure.log" || { cat "$tmp/configure.log"; echo "FAIL: cmake configure (benchmark)"; exit 1; }
+	cmake --build "$b" --parallel "$jobs" --target k3sm_sdk_page_bench
+	"$b/tests/k3sm_sdk_page_bench" --quick > "$tmp/bench.log" 2>&1 \
+		|| { cat "$tmp/bench.log"; echo "FAIL: the benchmark"; exit 1; }
+	sed 's/^/    /' "$tmp/bench.log"
+	echo "    ok (a smoke run; real numbers need a full run on idle hardware)"
+	echo "k3sm-sdk-cpp ci --stress: green"
 	exit 0
 fi
 
@@ -205,8 +309,8 @@ verify_fixtures
 echo "==> notifier (hack/ci.sh --notifier)"
 bash hack/ci.sh --notifier | sed 's/^/    /'
 
-echo "==> placeholder stages (--cshim --stress --linux-vm)"
-for st in --cshim --stress --linux-vm; do
+echo "==> placeholder stages (--cshim --linux-vm)"
+for st in --cshim --linux-vm; do
 	bash hack/ci.sh "$st" | sed 's/^/    /'
 done
 
