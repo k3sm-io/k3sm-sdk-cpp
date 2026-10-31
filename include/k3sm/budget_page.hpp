@@ -302,37 +302,72 @@ inline bool is_stale(std::int64_t observed_at, std::int64_t writer_period_second
     return age > bound;
 }
 
+// header_retries bounds how many times read_page loads the header line
+// before it reports the page truncated or of another ABI. A writer taking
+// the page over rewrites the minor word and the bodySize word with two
+// stores, and a reader loads them with two loads, so a reader can pair the
+// old minor with the new body size and see a header no writer stored. The
+// writer orders its stores so that every header it leaves is valid, and a
+// reload sees one of those; a page that stays invalid for every attempt is
+// reported as it is.
+inline constexpr int header_retries = 64;
+
+// read_header loads and checks the header line into s, retrying up to
+// header_retries times while a check fails. The checks run in the
+// contract's order: magic, major, header size (abi_mismatch), then the
+// body size of the page's minor (a newer minor's is read as this SDK's
+// newest) and the file size (truncated). It returns the body size of the
+// minor the header names.
+template <class Source>
+result<std::uint32_t> read_header(const Source& src, snapshot& s) noexcept {
+    namespace off = page_offset;
+    error::kind last = error::abi_mismatch;
+    for (int attempt = 0; attempt < header_retries; ++attempt) {
+        if (attempt > 0) {
+            cpu_relax();
+        }
+        if (src.load(off::magic, std::memory_order_relaxed) != page_magic_word()) {
+            last = error::abi_mismatch;
+            continue;
+        }
+        const std::uint64_t versions = src.load(off::abi_major, std::memory_order_relaxed);
+        const std::uint64_t sizes = src.load(off::body_size, std::memory_order_relaxed);
+        s.abi_major = static_cast<std::uint16_t>(versions);
+        s.abi_minor = static_cast<std::uint16_t>(versions >> 16);
+        s.header_size = static_cast<std::uint32_t>(versions >> 32);
+        s.body_size = static_cast<std::uint32_t>(sizes);
+        if (s.abi_major != page_abi_major || s.header_size != page_header_size) {
+            last = error::abi_mismatch;
+            continue;
+        }
+        const std::uint32_t known = page_body_size_of(s.abi_minor);
+        if (s.body_size < known ||
+            src.size() < std::uint64_t{s.header_size} + std::uint64_t{s.body_size}) {
+            last = error::truncated;
+            continue;
+        }
+        return known;
+    }
+    return last;
+}
+
 // read_page reads one snapshot from src (a mapped_source, or a test's
 // scripted source with the same three members) and checks it against now
 // (Unix seconds). The checks run in the contract's order: truncated header
-// line, magic, major, header size, the body size of the page's minor (a
-// newer minor's is read as this SDK's newest), file size, then the
-// seqlock copy (torn), the field domains (corrupt), the codes
-// (abi_mismatch) and staleness.
+// line, the header (read_header), then the seqlock copy (torn), the field
+// domains (corrupt), the codes (abi_mismatch) and staleness.
 template <class Source>
 result<snapshot> read_page(const Source& src, std::int64_t now) noexcept {
     namespace off = page_offset;
     if (src.size() < off::seq) {
         return error::truncated;
     }
-    if (src.load(off::magic, std::memory_order_relaxed) != page_magic_word()) {
-        return error::abi_mismatch;
-    }
-    const std::uint64_t versions = src.load(off::abi_major, std::memory_order_relaxed);
-    const std::uint64_t sizes = src.load(off::body_size, std::memory_order_relaxed);
     snapshot s;
-    s.abi_major = static_cast<std::uint16_t>(versions);
-    s.abi_minor = static_cast<std::uint16_t>(versions >> 16);
-    s.header_size = static_cast<std::uint32_t>(versions >> 32);
-    s.body_size = static_cast<std::uint32_t>(sizes);
-    if (s.abi_major != page_abi_major || s.header_size != page_header_size) {
-        return error::abi_mismatch;
+    const result<std::uint32_t> header = read_header(src, s);
+    if (!header) {
+        return header.error();
     }
-    const std::uint32_t known = page_body_size_of(s.abi_minor);
-    if (s.body_size < known ||
-        src.size() < std::uint64_t{s.header_size} + std::uint64_t{s.body_size}) {
-        return error::truncated;
-    }
+    const std::uint32_t known = *header;
 
     body_words b;
     for (std::size_t i = known / 8; i < page_body_size / 8; ++i) {

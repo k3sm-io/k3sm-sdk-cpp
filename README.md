@@ -95,6 +95,9 @@ if (sdk::admit_ok(*s)) {
   header says, or a body shorter than its minor's), `corrupt` (a field out
   of its range), `torn` (no stable copy after `reader_retries` attempts, 64),
   `stale` (the observation is older than `stale_factor`, 3, writer periods).
+- A writer that takes the page over rewrites its header in place, so a read
+  loads a header that fails the `abi_mismatch` or `truncated` checks again, up
+  to 64 times, before it returns that error.
 - A value the producer could not sample is `std::nullopt`. The `darwin` block
   is present on a macOS page, `linux_` on a Linux page and on a vm guest's
   page. Enumerators that would clash with a keyword or a compiler macro carry
