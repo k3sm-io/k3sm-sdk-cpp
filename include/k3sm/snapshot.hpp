@@ -94,7 +94,8 @@ enum class kill_mode_reason : std::uint64_t {
 // opt_i64 is an i64 page field that may be absent.
 using opt_i64 = std::optional<std::int64_t>;
 
-// capacity is the node's capacity and reserves.
+// capacity is the node's capacity and reserves. The last four fields are
+// page minor 1: each reads absent on a minor 0 page.
 struct capacity {
     opt_i64 cpu_capacity_milli;
     opt_i64 cpu_system_reserve_milli;
@@ -104,6 +105,17 @@ struct capacity {
     opt_i64 mem_allocatable_bytes;
     opt_i64 swap_total_bytes;
     opt_i64 swap_used_bytes;
+    // cpu_performance_cores and cpu_efficiency_cores are the logical CPUs in
+    // the performance and the efficiency level; absent where the host has no
+    // performance level split.
+    opt_i64 cpu_performance_cores;
+    opt_i64 cpu_efficiency_cores;
+    // gpu_present is whether the node advertises a GPU to pods (the
+    // mlx.k3sm.io/gpu extended resource); absent when the producer does not
+    // say.
+    std::optional<bool> gpu_present;
+    // gpu_count is the count of that extended resource.
+    opt_i64 gpu_count;
 };
 
 // darwin_compressor is the macOS compressor detail.

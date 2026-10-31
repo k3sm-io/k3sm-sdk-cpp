@@ -92,7 +92,7 @@ if (sdk::admit_ok(*s)) {
 - Errors (`error::kind`): `not_found` (no page or no access; `sys_errno()` has
   the errno), `abi_mismatch` (bad magic, an unknown ABI major or header size, or
   a code this SDK's tables do not hold), `truncated` (a file shorter than the
-  header says, or a body shorter than this SDK knows), `corrupt` (a field out
+  header says, or a body shorter than its minor's), `corrupt` (a field out
   of its range), `torn` (no stable copy after `reader_retries` attempts, 64),
   `stale` (the observation is older than `stale_factor`, 3, writer periods).
 - A value the producer could not sample is `std::nullopt`. The `darwin` block
@@ -100,7 +100,10 @@ if (sdk::admit_ok(*s)) {
   page. Enumerators that would clash with a keyword or a compiler macro carry
   a trailing underscore (`platform::linux_`, `kill_mode::auto_`).
 - A page of a newer minor of ABI major 1 reads up to the fields this SDK
-  knows. A page of another major is `abi_mismatch`, and a new major also
+  knows (minor 1). A minor 0 page reads too, and the fields minor 1 added
+  read `std::nullopt`: the capacity's `cpu_performance_cores`,
+  `cpu_efficiency_cores`, `gpu_present` (a `std::optional<bool>`) and
+  `gpu_count`. A page of another major is `abi_mismatch`, and a new major also
   changes the file name, so an older SDK finds no page instead of misreading
   one.
 - `change_notifier n(*page)` watches the page's `notifyEpoch` word, which the

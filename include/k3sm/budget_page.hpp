@@ -92,7 +92,8 @@ inline void cpu_relax() noexcept {
 #endif
 }
 
-// body_words is a stable copy of the body this reader knows.
+// body_words is a stable copy of the body this reader knows. The words a
+// page's minor does not carry stay page_absent.
 struct body_words {
     std::uint64_t w[page_body_size / 8];
 
@@ -182,7 +183,16 @@ inline result<snapshot> decode(const body_words& b, snapshot& s) noexcept {
         b.opt(off::mem_capacity_bytes),       b.opt(off::mem_system_reserve_bytes),
         b.opt(off::mem_eviction_reserve_bytes), b.opt(off::mem_allocatable_bytes),
         b.opt(off::swap_total_bytes),         b.opt(off::swap_used_bytes),
+        b.opt(off::cpu_performance_cores),    b.opt(off::cpu_efficiency_cores),
+        std::nullopt,                         b.opt(off::gpu_count),
     };
+    // gpuPresent is an i64 holding 0, 1 or page_absent.
+    if (const opt_i64 gpu = b.opt(off::gpu_present)) {
+        if (*gpu != 0 && *gpu != 1) {
+            return error::corrupt;
+        }
+        s.capacity.gpu_present = *gpu == 1;
+    }
     s.level = structural_code<level>(b, off::level, level_codes, &bad);
 
     if (s.platform == platform::darwin) {
@@ -295,7 +305,8 @@ inline bool is_stale(std::int64_t observed_at, std::int64_t writer_period_second
 // read_page reads one snapshot from src (a mapped_source, or a test's
 // scripted source with the same three members) and checks it against now
 // (Unix seconds). The checks run in the contract's order: truncated header
-// line, magic, major, header size, known body size, file size, then the
+// line, magic, major, header size, the body size of the page's minor (a
+// newer minor's is read as this SDK's newest), file size, then the
 // seqlock copy (torn), the field domains (corrupt), the codes
 // (abi_mismatch) and staleness.
 template <class Source>
@@ -317,12 +328,16 @@ result<snapshot> read_page(const Source& src, std::int64_t now) noexcept {
     if (s.abi_major != page_abi_major || s.header_size != page_header_size) {
         return error::abi_mismatch;
     }
-    if (s.body_size < page_body_size ||
+    const std::uint32_t known = page_body_size_of(s.abi_minor);
+    if (s.body_size < known ||
         src.size() < std::uint64_t{s.header_size} + std::uint64_t{s.body_size}) {
         return error::truncated;
     }
 
     body_words b;
+    for (std::size_t i = known / 8; i < page_body_size / 8; ++i) {
+        b.w[i] = static_cast<std::uint64_t>(page_absent);
+    }
     bool stable = false;
     for (int attempt = 0; attempt < reader_retries && !stable; ++attempt) {
         const std::uint64_t s1 = src.load(off::seq, std::memory_order_acquire);
@@ -330,7 +345,7 @@ result<snapshot> read_page(const Source& src, std::int64_t now) noexcept {
             cpu_relax();
             continue;
         }
-        for (std::size_t i = 0; i < page_body_size / 8; ++i) {
+        for (std::size_t i = 0; i < known / 8; ++i) {
             b.w[i] = src.load(page_header_size + 8 * i, std::memory_order_relaxed);
         }
         src.fence_acquire();

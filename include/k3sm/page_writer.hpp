@@ -173,6 +173,10 @@ inline void encode(const snapshot& s, page_image& p) noexcept {
     p.put_opt(off::mem_allocatable_bytes, c.mem_allocatable_bytes);
     p.put_opt(off::swap_total_bytes, c.swap_total_bytes);
     p.put_opt(off::swap_used_bytes, c.swap_used_bytes);
+    p.put_opt(off::cpu_performance_cores, c.cpu_performance_cores);
+    p.put_opt(off::cpu_efficiency_cores, c.cpu_efficiency_cores);
+    p.put_i64(off::gpu_present, c.gpu_present ? std::int64_t{*c.gpu_present} : page_absent);
+    p.put_opt(off::gpu_count, c.gpu_count);
     p.put_code(off::level, s.level);
 
     const darwin_signals d = s.darwin.value_or(darwin_signals{});
