@@ -1,6 +1,6 @@
 {
   "pageABIMajor": 1,
-  "pageABIMinor": 0,
+  "pageABIMinor": 1,
   "pageFileName": "budget.v1.page",
   "defaultPagePath": "/var/lib/k3sm/budget/budget.v1.page",
   "linuxPagePath": "/run/k3sm/budget/budget.v1.page",
@@ -8,7 +8,7 @@
   "pageSize": 4096,
   "pageBodyLimit": 3072,
   "headerSize": 192,
-  "bodySize": 2120,
+  "bodySize": 2152,
   "magic": "K3SMBDGT",
   "absent": -9223372036854775808,
   "seqOffset": 64,
@@ -19,7 +19,7 @@
   "staleFactor": 3,
   "observedAtResolution": "1s",
   "readerRetries": 64,
-  "layout": "layout.v1.0.txt",
+  "layout": "layout.v1.1.txt",
   "codes": {
     "band": [
       "critical",
@@ -79,31 +79,31 @@
   "fixtures": [
     {
       "file": "darwin.v1.page",
-      "sha256": "7f044b76b7967099c13ac5575db3cca401dc9a2b6cf465d7815b8bbefda66e92",
+      "sha256": "0998dd251f862f9eb783790052c57c9245894b55ea1c972534046ffd241478d8",
       "decodes": true,
       "description": "the Darwin status golden (sampleDarwin) as a native Darwin page"
     },
     {
       "file": "linux-producer.v1.page",
-      "sha256": "9679027e6a45f45f2751400bd6e6f9577859880cfe5d7f544dc34b7863c78cf2",
+      "sha256": "c5c8faaffd1836e7a48a03bb43f75da2ca2e0f927264fd00dd56dbbda2740df9",
       "decodes": true,
       "description": "the Linux status golden (sampleLinux) as a Linux producer's page"
     },
     {
       "file": "linux-guest.v1.page",
-      "sha256": "fa1275aa87e05093d6c516eea8f0195f7582dc548dfcee514bcea3a3fbfb6358",
+      "sha256": "310782c0e4e98ec1b01dea1e2ef7d45bbfa40f94f0ee6571677728d36de1cda3",
       "decodes": true,
       "description": "a vm guest page: the Darwin host's page relayed to the guest, with the linux block as the guest section (sampleLinux's)"
     },
     {
       "file": "absent.v1.page",
-      "sha256": "7fc7e8a541e2090b62ae7da0e36e48d810690a92657c4f2f8b0632773f02d483",
+      "sha256": "196f4b6fd07f50f136e8ad249fc5d43ec5edecab18f35f0a779d9116e844ba22",
       "decodes": true,
       "description": "the Darwin page with every optional value absent (PageAbsent), no signals and no counters"
     },
     {
       "file": "pattern.v1.page",
-      "sha256": "e1383456f7d2355eef0f9199e64786d818c6e764bc4fd4fae97335934b0a9a99",
+      "sha256": "3f9ce7722dd00b7e7b5cdfb758dd37d535f4dfa19885134ef669b683b671898d",
       "decodes": false,
       "description": "raw: a valid header; every u64 and i64 word, seq and notifyEpoch included, holds 0x50415454\u003c\u003c32 | its own offset; each nodeName byte holds the low byte of its own offset; every other byte is zero"
     }
@@ -112,37 +112,37 @@
     {
       "name": "short",
       "file": "negative/short.v1.page",
-      "sha256": "19fd8d9954feb717a656e9573d44055a941a21ebb9c53eb9db74b4f0ab85e7c9",
+      "sha256": "dd2bf636db0bc7a979b608cdb6b1226eeb26891f2b4a277ca654211caa43cee8",
       "error": "truncated"
     },
     {
       "name": "bad-magic",
       "file": "negative/bad-magic.v1.page",
-      "sha256": "58234510d13183b5c168498a5375ae7f20b9d3903186c909f7ca18fa11861bd1",
+      "sha256": "3868d8af8496110cec2080d350958fe11ef6430e59603383617c1ad66610567c",
       "error": "abiMismatch"
     },
     {
       "name": "unknown-major",
       "file": "negative/unknown-major.v1.page",
-      "sha256": "2700050226248eac2e69eab917b5d1a733f55a83518660e4f079bbfe5d837a1d",
+      "sha256": "c085ee013598b32bf106861061de9811dce05e9a19ee7a0252e8e7213c9854e7",
       "error": "abiMismatch"
     },
     {
       "name": "body-size-below-known",
       "file": "negative/body-size-below-known.v1.page",
-      "sha256": "bd8000168ac0df269762636382304f52c1716a4a059476feeca133e233e72188",
+      "sha256": "53d6272cc5afc6f8e881a8e874af61716a3f1d4a996223b605cee7607edfda73",
       "error": "truncated"
     },
     {
       "name": "odd-seq",
       "file": "negative/odd-seq.v1.page",
-      "sha256": "8ab520fb20f636eb385cfa135dcc2aa430fb93eb0b68491c3d356b1ca93ec994",
+      "sha256": "dda37a2b0c65ce993d0804f0168e4d7ff2e633e342dda5ec151f9b189058e839",
       "error": "torn"
     },
     {
       "name": "node-name-too-long",
       "file": "negative/node-name-too-long.v1.page",
-      "sha256": "49fc097dbd27ed0cf8eb035224d21065f3d2a805546de1b0d0784322d903c25b",
+      "sha256": "bb59f08dab0330614430a58349c01c1b9e3fc0b8c98bde1898ae1cd718ce721d",
       "error": "corrupt",
       "encoderError": "nodeNameTooLong"
     }
@@ -212,6 +212,18 @@
       "base": "darwin.v1.page",
       "field": "capacity.swapUsedBytes",
       "value": 2147483648,
+      "due": false
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "capacity.cpuPerformanceCores",
+      "value": 6,
+      "due": false
+    },
+    {
+      "base": "darwin.v1.page",
+      "field": "capacity.gpuPresent",
+      "value": 0,
       "due": false
     },
     {

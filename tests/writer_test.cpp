@@ -29,6 +29,7 @@ limitations under the License.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -161,6 +162,57 @@ void test_golden_absent_by_hand() {
     }
 }
 
+// The writer writes the minor 1 capacity fields at their offsets, and a
+// snapshot read from a minor 0 page encodes as minor 1 with them absent.
+void test_encode_minor1_fields() {
+    namespace o = sdk::page_offset;
+    sdk::snapshot s = golden("darwin.v1.page");
+    s.capacity.cpu_performance_cores = 10;
+    s.capacity.cpu_efficiency_cores = 4;
+    s.capacity.gpu_present = false;
+    s.capacity.gpu_count = 0;
+    std::string page = encoded(s);
+    K3SM_CHECK_EQ(get_u64(page, o::cpu_performance_cores), 10u);
+    K3SM_CHECK_EQ(get_u64(page, o::cpu_efficiency_cores), 4u);
+    K3SM_CHECK_EQ(get_u64(page, o::gpu_present), 0u);
+    K3SM_CHECK_EQ(get_u64(page, o::gpu_count), 0u);
+    K3SM_CHECK_EQ(get_u64(page, o::abi_major) >> 16 & 0xffff, sdk::page_abi_minor);
+    K3SM_CHECK_EQ(get_u64(page, o::body_size) & 0xffffffff, sdk::page_body_size);
+
+    s.capacity.gpu_present = true;
+    page = encoded(s);
+    K3SM_CHECK_EQ(get_u64(page, o::gpu_present), 1u);
+
+    // A minor 0 page: the same golden with its minor and body size rolled back.
+    std::string v0 = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
+    put_u64(v0, o::abi_major,
+            std::uint64_t{sdk::page_abi_major} | std::uint64_t{sdk::page_header_size} << 32);
+    put_u64(v0, o::body_size, sdk::page_body_size_minor0);
+    const std::string path = page_path("minor0.page");
+    {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        K3SM_CHECK(f != nullptr);
+        if (f == nullptr) {
+            return;
+        }
+        std::fwrite(v0.data(), 1, v0.size(), f);
+        std::fclose(f);
+    }
+    const auto r = read_path(path);
+    ::unlink(path.c_str());
+    K3SM_CHECK(r.has_value());
+    if (!r) {
+        return;
+    }
+    K3SM_CHECK(!r->capacity.cpu_performance_cores && !r->capacity.cpu_efficiency_cores &&
+               !r->capacity.gpu_present && !r->capacity.gpu_count);
+    page = encoded(*r);
+    const auto absent = static_cast<std::uint64_t>(sdk::page_absent);
+    for (std::size_t at = o::cpu_performance_cores; at <= o::gpu_count; at += 8) {
+        K3SM_CHECK_EQ(get_u64(page, at), absent);
+    }
+}
+
 void test_encode_refusals() {
     sdk::snapshot s = golden("darwin.v1.page");
     unsigned char buf[sdk::page_size];
@@ -224,6 +276,16 @@ bool set_field(sdk::snapshot& s, const std::string& field, std::int64_t v) {
     }
     if (field == "capacity.swapUsedBytes") {
         return opt(s.capacity.swap_used_bytes);
+    }
+    if (field == "capacity.cpuPerformanceCores") {
+        return opt(s.capacity.cpu_performance_cores);
+    }
+    if (field == "capacity.gpuPresent") {
+        s.capacity.gpu_present = v == 0 ? std::optional<bool>(false) : std::optional<bool>(true);
+        if (v == sdk::page_absent) {
+            s.capacity.gpu_present.reset();
+        }
+        return true;
     }
     if (field == "darwin.vmPressureLevel") {
         return opt(s.darwin->vm_pressure_level);
@@ -510,6 +572,7 @@ int main() {
     writer_test::make_dirs();
     writer_test::test_golden_round_trip();
     writer_test::test_golden_absent_by_hand();
+    writer_test::test_encode_minor1_fields();
     writer_test::test_encode_refusals();
     writer_test::test_notify_vectors();
     writer_test::test_live_page();

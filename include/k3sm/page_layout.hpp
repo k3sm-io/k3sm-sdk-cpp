@@ -19,8 +19,9 @@ limitations under the License.
 
 // The node budget page ABI, major 1: the constants and field offsets of the
 // fixed 4096-byte little-endian page, as the k3sm apis repository publishes
-// them (budget/v1alpha1/testdata/page: manifest.json and layout.v1.0.txt).
-// The tests check every value here against those vendored files.
+// them (budget/v1alpha1/testdata/page: manifest.json, layout.v1.0.txt and
+// layout.v1.1.txt). The tests check every value here against those vendored
+// files.
 
 #include <cstddef>
 #include <cstdint>
@@ -35,8 +36,11 @@ namespace k3sm::sdk {
 inline constexpr std::uint16_t page_abi_major = 1;
 
 // page_abi_minor is the newest page ABI minor this SDK knows. A page of a
-// higher minor of the same major is read up to this minor's body size.
-inline constexpr std::uint16_t page_abi_minor = 0;
+// higher minor of the same major is read up to this minor's body size; a
+// page of an older minor is read up to its own, and the fields a later
+// minor appends read absent. Minor 1 appends the CPU core split and the GPU
+// presence and count to the capacity, after the counters.
+inline constexpr std::uint16_t page_abi_minor = 1;
 
 // page_file_name is the page's file name, budget.v<page_abi_major>.page.
 inline constexpr char page_file_name[] = "budget.v1.page";
@@ -73,7 +77,18 @@ inline constexpr std::uint32_t page_header_size = 192;
 
 // page_body_size is the body size of page_abi_minor: the bytes from
 // page_header_size to the end of its last field.
-inline constexpr std::uint32_t page_body_size = 2120;
+inline constexpr std::uint32_t page_body_size = 2152;
+
+// page_body_size_minor0 is the body size of minor 0, the smallest body a
+// page of this major carries.
+inline constexpr std::uint32_t page_body_size_minor0 = 2120;
+
+// page_body_size_of returns the body size of a page of the given minor: a
+// minor this SDK knows has its own size, and a newer one is read up to
+// page_body_size.
+constexpr std::uint32_t page_body_size_of(std::uint16_t minor) noexcept {
+    return minor == 0 ? page_body_size_minor0 : page_body_size;
+}
 
 // page_absent is the value an optional i64 field holds when the producer
 // could not sample it. 0 is never absent.
@@ -217,6 +232,14 @@ inline constexpr std::size_t tier1_refused_total = 48;
 // counter_slot returns the offset of counter slot i.
 constexpr std::size_t counter_slot(std::size_t i) noexcept { return counters + i * counter_stride; }
 
+// Minor 1: the capacity's CPU core split and GPU presence and count,
+// appended after the counters. gpu_present is an i64 holding 0, 1 or
+// page_absent.
+inline constexpr std::size_t cpu_performance_cores = 2312;
+inline constexpr std::size_t cpu_efficiency_cores = 2320;
+inline constexpr std::size_t gpu_present = 2328;
+inline constexpr std::size_t gpu_count = 2336;
+
 }  // namespace page_offset
 
 // The layout's own invariants. The tests check each offset against the
@@ -231,8 +254,15 @@ static_assert(page_offset::linux_psi_field(2, 1, page_offset::linux_psi_total_us
 static_assert(page_offset::signal_slot(max_signals) == page_offset::admit);
 static_assert(page_offset::signal_field::shared_with + 8 == page_offset::signal_stride);
 static_assert(page_offset::counter_field::tier1_refused_total + 8 == page_offset::counter_stride);
-static_assert(page_offset::counter_slot(max_counters) == page_header_size + page_body_size,
-              "the last counter slot ends the body");
+static_assert(page_offset::counter_slot(max_counters) == page_header_size + page_body_size_minor0,
+              "the last counter slot ends the minor 0 body");
+static_assert(page_offset::cpu_performance_cores == page_header_size + page_body_size_minor0,
+              "minor 1 starts where minor 0 ends");
+static_assert(page_offset::cpu_efficiency_cores == page_offset::cpu_performance_cores + 8 &&
+              page_offset::gpu_present == page_offset::cpu_efficiency_cores + 8 &&
+              page_offset::gpu_count == page_offset::gpu_present + 8);
+static_assert(page_offset::gpu_count + 8 == page_header_size + page_body_size,
+              "gpuCount ends the minor 1 body");
 static_assert(page_header_size + page_body_size <= 3072, "a quarter of the page stays free");
 
 }  // namespace k3sm::sdk

@@ -6,7 +6,7 @@
 #
 # tests/fixtures/page is a byte-for-byte copy of budget/v1alpha1/testdata/page
 # in github.com/k3sm-io/apis at commit
-# 27bfab58531394e629db6d7c695f1858d19edca6. Its SHA256SUMS comes with it.
+# 115e311a5bc5e7f62c1a6c541d15d3f661c9c59b. Its SHA256SUMS comes with it.
 # This check fails when any file differs from its digest, when a listed file
 # is missing, or when the directory holds a file SHA256SUMS does not list.
 # To move to a newer apis commit, copy the whole directory again (never edit

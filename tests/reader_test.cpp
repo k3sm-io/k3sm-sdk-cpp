@@ -130,7 +130,7 @@ void test_manifest_constants() {
     K3SM_CHECK_EQ(num("staleFactor"), sdk::stale_factor);
     K3SM_CHECK_EQ(k3sm_test::json_value(m, "observedAtResolution"), std::string("1s"));
     K3SM_CHECK_EQ(num("readerRetries"), sdk::reader_retries);
-    K3SM_CHECK_EQ(k3sm_test::json_value(m, "layout"), std::string("layout.v1.0.txt"));
+    K3SM_CHECK_EQ(k3sm_test::json_value(m, "layout"), std::string("layout.v1.1.txt"));
 }
 
 // The code tables: each enum's values in code order, by manifest name.
@@ -238,6 +238,10 @@ std::map<std::string, std::size_t> layout_offsets() {
         {"capacity.memAllocatableBytes", o::mem_allocatable_bytes},
         {"capacity.swapTotalBytes", o::swap_total_bytes},
         {"capacity.swapUsedBytes", o::swap_used_bytes},
+        {"capacity.cpuPerformanceCores", o::cpu_performance_cores},
+        {"capacity.cpuEfficiencyCores", o::cpu_efficiency_cores},
+        {"capacity.gpuPresent", o::gpu_present},
+        {"capacity.gpuCount", o::gpu_count},
         {"level", o::level},
         {"darwin.vmPressureLevel", o::darwin_vm_pressure_level},
         {"darwin.memorystatusLevelPermille", o::darwin_memorystatus_level_permille},
@@ -328,9 +332,9 @@ struct layout_line {
     std::string name;
 };
 
-std::vector<layout_line> read_layout() {
+std::vector<layout_line> read_layout(const char* file = "layout.v1.1.txt") {
     std::vector<layout_line> out;
-    std::istringstream in(read_file(fixture("layout.v1.0.txt")));
+    std::istringstream in(read_file(fixture(file)));
     std::string line;
     while (std::getline(in, line)) {
         if (line.empty() || line[0] == '#') {
@@ -365,6 +369,23 @@ void test_layout_descriptor() {
         }
     }
     K3SM_CHECK_EQ(end, std::size_t{sdk::page_header_size} + sdk::page_body_size);
+
+    // The minor 0 descriptor is a line prefix of minor 1's and ends at the
+    // minor 0 body size; minor 1 appends only the four capacity fields.
+    const auto v0 = read_layout("layout.v1.0.txt");
+    K3SM_CHECK_EQ(v0.size() + 4, layout.size());
+    std::size_t end0 = 0;
+    for (std::size_t i = 0; i < v0.size() && i < layout.size(); ++i) {
+        K3SM_CHECK(v0[i].name == layout[i].name && v0[i].offset == layout[i].offset &&
+                   v0[i].size == layout[i].size && v0[i].kind == layout[i].kind);
+        if (v0[i].offset >= sdk::page_header_size) {
+            end0 = std::max(end0, v0[i].offset + v0[i].size);
+        }
+    }
+    K3SM_CHECK_EQ(end0, std::size_t{sdk::page_header_size} + sdk::page_body_size_minor0);
+    K3SM_CHECK_EQ(sdk::page_body_size_of(0), sdk::page_body_size_minor0);
+    K3SM_CHECK_EQ(sdk::page_body_size_of(1), sdk::page_body_size);
+    K3SM_CHECK_EQ(sdk::page_body_size_of(7), sdk::page_body_size);
 }
 
 // The pattern fixture holds 0x50415454<<32 | offset in every u64 and i64
@@ -408,6 +429,16 @@ void check_capacity_darwin(const sdk::capacity& c) {
     K3SM_CHECK_EQ(c.mem_allocatable_bytes, 13 * gib + 512 * mib);
     K3SM_CHECK_EQ(c.swap_total_bytes, 4 * gib);
     K3SM_CHECK_EQ(c.swap_used_bytes, 1 * gib);
+}
+
+// check_capacity_minor1 checks the four capacity fields of minor 1.
+void check_capacity_minor1(const sdk::capacity& c, std::optional<std::int64_t> perf,
+                           std::optional<std::int64_t> eff, std::optional<bool> gpu,
+                           std::optional<std::int64_t> gpus) {
+    K3SM_CHECK_EQ(c.cpu_performance_cores, perf);
+    K3SM_CHECK_EQ(c.cpu_efficiency_cores, eff);
+    K3SM_CHECK_EQ(c.gpu_present, gpu);
+    K3SM_CHECK_EQ(c.gpu_count, gpus);
 }
 
 void check_darwin_block(const sdk::darwin_signals& d) {
@@ -472,7 +503,7 @@ void check_signal(const sdk::signal_record& g, sdk::signal_id id, sdk::unit u,
     K3SM_CHECK(g.shared_with == shared);
 }
 
-void check_darwin_common(const sdk::snapshot& s, std::uint16_t minor = 0, std::uint32_t body = 2120) {
+void check_darwin_common(const sdk::snapshot& s, std::uint16_t minor = 1, std::uint32_t body = 2152) {
     K3SM_CHECK_EQ(s.abi_major, 1);
     K3SM_CHECK_EQ(s.abi_minor, minor);
     K3SM_CHECK_EQ(s.header_size, 192u);
@@ -495,13 +526,18 @@ void check_darwin_common(const sdk::snapshot& s, std::uint16_t minor = 0, std::u
     K3SM_CHECK(s.darwin.has_value());
 }
 
-void check_darwin_sample(const sdk::snapshot& s, std::uint16_t minor = 0, std::uint32_t body = 2120) {
+void check_darwin_sample(const sdk::snapshot& s, std::uint16_t minor = 1, std::uint32_t body = 2152) {
     using sdk::signal_id;
     using sdk::trend;
     using sdk::unit;
     using lr = sdk::limiting_resource;
     check_darwin_common(s, minor, body);
     check_capacity_darwin(s.capacity);
+    if (minor == 0) {
+        check_capacity_minor1(s.capacity, none, none, std::nullopt, none);
+    } else {
+        check_capacity_minor1(s.capacity, 4, 4, true, 1);
+    }
     if (s.darwin) {
         check_darwin_block(*s.darwin);
     }
@@ -597,6 +633,7 @@ void test_golden_linux_producer() {
     K3SM_CHECK_EQ(s.capacity.mem_allocatable_bytes, 30 * gib);
     K3SM_CHECK_EQ(s.capacity.swap_total_bytes, 0);
     K3SM_CHECK_EQ(s.capacity.swap_used_bytes, 0);
+    check_capacity_minor1(s.capacity, none, none, false, 0);
     K3SM_CHECK(!s.darwin.has_value());
     K3SM_CHECK(s.linux_.has_value());
     if (s.linux_) {
@@ -639,6 +676,7 @@ void test_golden_absent() {
     K3SM_CHECK(!c.cpu_capacity_milli && !c.cpu_system_reserve_milli && !c.mem_capacity_bytes &&
                !c.mem_system_reserve_bytes && !c.mem_eviction_reserve_bytes && !c.mem_allocatable_bytes &&
                !c.swap_total_bytes && !c.swap_used_bytes);
+    check_capacity_minor1(c, none, none, std::nullopt, none);
     if (s.darwin) {
         const sdk::darwin_signals& d = *s.darwin;
         K3SM_CHECK(!d.vm_pressure_level && !d.memorystatus_level_permille && !d.compressor.bytes_used &&
@@ -697,6 +735,62 @@ void test_not_found() {
     K3SM_CHECK(!empty && empty.error() == sdk::error::truncated);
 }
 
+// with_minor returns page with its abiMinor set to minor and its bodySize to
+// body.
+std::string with_minor(std::string page, std::uint16_t minor, std::uint32_t body) {
+    namespace o = sdk::page_offset;
+    put_u64(page, o::abi_major,
+            std::uint64_t{sdk::page_abi_major} | std::uint64_t{minor} << 16 |
+                std::uint64_t{sdk::page_header_size} << 32);
+    put_u64(page, o::body_size, body);
+    return page;
+}
+
+// A minor 0 page reads up to the minor 0 body, and the minor 1 fields read
+// absent whatever bytes follow it; a page shorter than its own minor's body
+// is truncated; gpuPresent holds 0, 1 or absent.
+void test_minor0_page() {
+    namespace o = sdk::page_offset;
+    const std::string darwin = read_file(fixture("darwin.v1.page"));
+
+    std::string v0 = with_minor(darwin, 0, sdk::page_body_size_minor0);
+    for (std::size_t at = o::cpu_performance_cores; at <= o::gpu_count; at += 8) {
+        put_u64(v0, at, 7);  // bytes past a minor 0 body are not fields
+    }
+    auto r = read_bytes(v0);
+    K3SM_CHECK(r.has_value());
+    if (r) {
+        check_darwin_sample(*r, 0, sdk::page_body_size_minor0);
+    }
+
+    // A minor 0 page with a longer body still carries no minor 1 field.
+    r = read_bytes(with_minor(darwin, 0, sdk::page_body_size));
+    K3SM_CHECK(r.has_value());
+    if (r) {
+        check_capacity_minor1(r->capacity, none, none, std::nullopt, none);
+    }
+
+    r = read_bytes(with_minor(darwin, 0, sdk::page_body_size_minor0 - 8));
+    K3SM_CHECK(!r && r.error() == sdk::error::truncated);
+    r = read_bytes(with_minor(darwin, 1, sdk::page_body_size - 8));
+    K3SM_CHECK(!r && r.error() == sdk::error::truncated);
+
+    std::string gpu = darwin;
+    put_u64(gpu, o::gpu_present, 0);
+    put_u64(gpu, o::gpu_count, 0);
+    r = read_bytes(gpu);
+    K3SM_CHECK(r.has_value());
+    if (r) {
+        check_capacity_minor1(r->capacity, 4, 4, false, 0);
+    }
+    put_u64(gpu, o::gpu_present, 2);
+    r = read_bytes(gpu);
+    K3SM_CHECK(!r && r.error() == sdk::error::corrupt);
+    put_u64(gpu, o::gpu_present, static_cast<std::uint64_t>(-1));
+    r = read_bytes(gpu);
+    K3SM_CHECK(!r && r.error() == sdk::error::corrupt);
+}
+
 // A higher minor of the known major reads up to the known size; a header
 // size or a structural code this reader does not know is a mismatch; an
 // unknown producer-vocabulary code reads as unknown.
@@ -704,15 +798,16 @@ void test_minor_and_codes() {
     const std::string darwin = read_file(fixture("darwin.v1.page"));
     namespace o = sdk::page_offset;
 
-    std::string newer = darwin;
-    put_u64(newer, o::abi_major, get_u64(newer, o::abi_major) | (std::uint64_t{1} << 16));
-    put_u64(newer, o::body_size, sdk::page_body_size + 8);
+    std::string newer = with_minor(darwin, 2, sdk::page_body_size + 8);
     put_u64(newer, std::size_t{sdk::page_header_size} + sdk::page_body_size, 0x1234);
     auto r = read_bytes(newer);
     K3SM_CHECK(r.has_value());
     if (r) {
-        check_darwin_sample(*r, 1, sdk::page_body_size + 8);
+        check_darwin_sample(*r, 2, sdk::page_body_size + 8);
     }
+    // A newer minor's body is at least this SDK's newest.
+    r = read_bytes(with_minor(darwin, 2, sdk::page_body_size - 8));
+    K3SM_CHECK(!r && r.error() == sdk::error::truncated);
 
     std::string past_file = darwin;
     put_u64(past_file, o::body_size, sdk::page_size);  // headerSize + bodySize beyond the file
@@ -857,6 +952,7 @@ int main() {
     reader_test::test_manifest_fixture_list();
     reader_test::test_negative_cases();
     reader_test::test_not_found();
+    reader_test::test_minor0_page();
     reader_test::test_minor_and_codes();
     reader_test::test_staleness();
     reader_test::test_helpers();
