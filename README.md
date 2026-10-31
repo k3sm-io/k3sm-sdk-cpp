@@ -149,11 +149,14 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 hack/ci.sh          # the full gate
 hack/ci.sh --reader # the page reader's tests alone
+hack/ci.sh --stress # ThreadSanitizer stress, fuzz smoke, ASan/UBSan, benchmark
 ```
 
 Requirements: CMake 3.24 or later and a C++20 compiler (Apple clang from the
 Xcode Command Line Tools is enough). The SDK depends on nothing outside the
-standard library.
+standard library. `hack/ci.sh --stress` also needs a clang with libFuzzer, which
+Apple clang does not ship: on macOS, `brew install llvm` provides one, and
+`K3SM_SDK_FUZZ_CXX` can name any other.
 
 ## Contributing
 
