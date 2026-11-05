@@ -375,8 +375,9 @@ inline constexpr std::size_t header_words = page_offset::seq / 8;
 // major and the header size). The word that keeps the pair valid goes
 // first: the bodySize word when the body grows or stays (over an older
 // minor), the minor word when it shrinks (over a newer minor, a rollback).
-// The magic goes last, so a page that was not one before is not one until
-// the whole header line is in place.
+// The magic goes last, so a page whose magic was not intact is not recognised
+// until the header line is in place; a page whose magic was already intact is
+// recognised at the word-8 store (major, minor, header size).
 inline std::array<std::size_t, header_words> resume_store_order(bool shrinks) noexcept {
     namespace off = page_offset;
     constexpr std::size_t minor_word = off::abi_minor & ~std::size_t{7};
@@ -438,11 +439,13 @@ public:
     // truncated or replaced), maps it shared and takes it over: seq and
     // notifyEpoch continue from a page of this ABI major, the generation is
     // the page's previous generation plus one (1 on a new page), and the
-    // header line is rewritten with the magic last. doorbell_path, when not
-    // null, names a doorbell file (created 0644 if missing) the writer
-    // writes after every notifyEpoch bump. Errors: writer_busy when another
-    // writer holds the lock, invalid_argument for a lock file inside the
-    // page directory, io (with errno) for a failing system call.
+    // header line is rewritten with the magic last (a page whose magic was
+    // already intact is recognised at the word-8 store instead).
+    // doorbell_path, when not null, names a doorbell file (created 0644 if
+    // missing) the writer writes after every notifyEpoch bump. Errors:
+    // writer_busy when another writer holds the lock, invalid_argument for a
+    // lock file inside the page directory, io (with errno) for a failing
+    // system call.
     static result<page_writer> open(const char* page_path, const char* lock_path,
                                     const char* doorbell_path = nullptr) noexcept {
         if (page_path == nullptr || lock_path == nullptr) {
