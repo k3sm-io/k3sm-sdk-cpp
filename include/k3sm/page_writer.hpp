@@ -40,9 +40,12 @@ limitations under the License.
 // mapping keeps working across writer restarts. One writer per page: the
 // writer holds an exclusive flock on a lock file that must live outside the
 // page's directory (a pod can open that directory). The writer owns the
-// page's generation: it is the previous page's generation plus one at every
-// open (a writer restart), and bump_generation() adds one on a policy
-// change.
+// page's generation: at every open (a writer restart) it is the previous
+// generation plus one on a page of this ABI major, and 1 on a new page or a
+// page with a foreign header, whose generation word cannot be trusted.
+// bump_generation() adds one on a policy change. A reader therefore cannot
+// rely on the generation's order, or on seeing it change, across a rewrite by
+// a writer of a foreign ABI.
 
 #include <algorithm>
 #include <array>
@@ -438,7 +441,8 @@ public:
     // page_path (0644, preallocated to page_size; an existing file is never
     // truncated or replaced), maps it shared and takes it over: seq and
     // notifyEpoch continue from a page of this ABI major, the generation is
-    // the page's previous generation plus one (1 on a new page), and the
+    // that page's previous generation plus one (1 on a new page or a page with
+    // a foreign header, whose generation word cannot be trusted), and the
     // header line is rewritten with the magic last (a page whose magic was
     // already intact is recognised at the word-8 store instead).
     // doorbell_path, when not null, names a doorbell file (created 0644 if

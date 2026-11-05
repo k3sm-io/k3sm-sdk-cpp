@@ -585,7 +585,8 @@ void test_resume_rollback_page() {
 
 // A page with an intact magic but a foreign major or header size is not a
 // page of this ABI: a reader refuses it until the resume's word-8 store, and
-// the full resume starts over (seq 0, generation 1 past the old one).
+// the full resume starts over (seq 0, epoch 0, and generation 1: the old page's
+// generation is not read, so it does not carry over).
 void test_resume_foreign_header_with_intact_magic() {
     struct foreign_case {
         const char* name;
@@ -607,6 +608,7 @@ void test_resume_foreign_header_with_intact_magic() {
         put_u64(bytes, sdk::page_offset::abi_major, c.versions);
         put_u64(bytes, sdk::page_offset::seq, 40);
         put_u64(bytes, sdk::page_offset::notify_epoch, 7);
+        put_u64(bytes, sdk::page_offset::generation, 9);
 
         // Stage by hand: each store of the resume order, the header read after each.
         const std::string page = page_path("foreign-staged.page");
@@ -646,7 +648,9 @@ void test_resume_foreign_header_with_intact_magic() {
         }
         K3SM_CHECK_EQ(w->seq(), 0u);
         K3SM_CHECK_EQ(w->epoch(), 0u);
+        K3SM_CHECK_EQ(w->generation(), 1);
         K3SM_CHECK(w->publish(golden("darwin.v1.page")).has_value());
+        K3SM_CHECK_EQ(get_u64(k3sm_test::read_file(live), sdk::page_offset::generation), 1u);
         const auto r = read_path(live);
         K3SM_CHECK(r.has_value() && r->abi_minor == sdk::page_abi_minor);
         ::unlink(live.c_str());
