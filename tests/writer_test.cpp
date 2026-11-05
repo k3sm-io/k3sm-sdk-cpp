@@ -583,6 +583,76 @@ void test_resume_rollback_page() {
     ::unlink(page.c_str());
 }
 
+// A page with an intact magic but a foreign major or header size is not a
+// page of this ABI: a reader refuses it until the resume's word-8 store, and
+// the full resume starts over (seq 0, generation 1 past the old one).
+void test_resume_foreign_header_with_intact_magic() {
+    struct foreign_case {
+        const char* name;
+        std::uint64_t versions;
+    };
+    const foreign_case cases[] = {
+        {"foreign abiMajor", versions_word(sdk::page_abi_minor) + 1},
+        {"foreign headerSize",
+         versions_word(sdk::page_abi_minor) + (std::uint64_t{8} << 32)},
+    };
+    std::string fresh(sdk::page_size, '\0');
+    put_u64(fresh, sdk::page_offset::magic, sdk::detail::page_magic_word());
+    put_u64(fresh, sdk::page_offset::abi_major, versions_word(sdk::page_abi_minor));
+    put_u64(fresh, sdk::page_offset::body_size, sdk::page_body_size);
+    const std::size_t word8 = sdk::page_offset::abi_major;
+    for (const foreign_case& c : cases) {
+        std::string bytes = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
+        bytes.resize(sdk::page_size, '\0');
+        put_u64(bytes, sdk::page_offset::abi_major, c.versions);
+        put_u64(bytes, sdk::page_offset::seq, 40);
+        put_u64(bytes, sdk::page_offset::notify_epoch, 7);
+
+        // Stage by hand: each store of the resume order, the header read after each.
+        const std::string page = page_path("foreign-staged.page");
+        bool recognised = false;
+        std::string staged = bytes;
+        for (const std::size_t o : sdk::detail::resume_store_order(false)) {
+            put_u64(staged, o, get_u64(fresh, o));
+            recognised = recognised || o == word8;
+            const int fd = ::open(page.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+            K3SM_CHECK(fd >= 0 && ::write(fd, staged.data(), staged.size()) == static_cast<ssize_t>(staged.size()));
+            ::close(fd);
+            const auto r = read_path(page);
+            if (recognised) {
+                if (!r.has_value()) {
+                    std::fprintf(stderr, "%s: store at %zu: not valid after the word-8 store\n", c.name, o);
+                }
+                K3SM_CHECK(r.has_value());
+            } else {
+                K3SM_CHECK(!r.has_value() && r.error() == sdk::error::abi_mismatch);
+            }
+        }
+        K3SM_CHECK(recognised);
+        ::unlink(page.c_str());
+
+        // The real resume over the same page.
+        const std::string live = page_path("foreign.page");
+        {
+            const int fd = ::open(live.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+            K3SM_CHECK(fd >= 0 && ::write(fd, bytes.data(), bytes.size()) == static_cast<ssize_t>(bytes.size()));
+            ::close(fd);
+        }
+        auto w = sdk::page_writer::open(live.c_str(), lock_path("foreign.lock").c_str());
+        K3SM_CHECK(w.has_value());
+        if (!w) {
+            ::unlink(live.c_str());
+            continue;
+        }
+        K3SM_CHECK_EQ(w->seq(), 0u);
+        K3SM_CHECK_EQ(w->epoch(), 0u);
+        K3SM_CHECK(w->publish(golden("darwin.v1.page")).has_value());
+        const auto r = read_path(live);
+        K3SM_CHECK(r.has_value() && r->abi_minor == sdk::page_abi_minor);
+        ::unlink(live.c_str());
+    }
+}
+
 // A short file that is not a page grows in place to page_size and starts over.
 void test_short_file_grows_in_place() {
     const std::string page = page_path("short.page");
@@ -676,6 +746,7 @@ int main() {
     writer_test::test_resume_odd_seq();
     writer_test::test_resume_header_store_order();
     writer_test::test_resume_rollback_page();
+    writer_test::test_resume_foreign_header_with_intact_magic();
     writer_test::test_short_file_grows_in_place();
     writer_test::test_wake_and_doorbell();
     writer_test::cleanup();
