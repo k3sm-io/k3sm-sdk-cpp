@@ -440,11 +440,12 @@ public:
     // notifyEpoch continue from a page of this ABI major, the generation is
     // the page's previous generation plus one (1 on a new page), and the
     // header line is rewritten with the magic last (a page whose magic was
-    // already intact is recognised at the word-8 store instead). doorbell_path, when not
-    // null, names a doorbell file (created 0644 if missing) the writer
-    // writes after every notifyEpoch bump. Errors: writer_busy when another
-    // writer holds the lock, invalid_argument for a lock file inside the
-    // page directory, io (with errno) for a failing system call.
+    // already intact is recognised at the word-8 store instead).
+    // doorbell_path, when not null, names a doorbell file (created 0644 if
+    // missing) the writer writes after every notifyEpoch bump. Errors:
+    // writer_busy when another writer holds the lock, invalid_argument for a
+    // lock file inside the page directory, io (with errno) for a failing
+    // system call.
     static result<page_writer> open(const char* page_path, const char* lock_path,
                                     const char* doorbell_path = nullptr) noexcept {
         if (page_path == nullptr || lock_path == nullptr) {
