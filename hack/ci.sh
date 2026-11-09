@@ -105,8 +105,14 @@ ci_record_last() {
 		"$(ci_json_str "$(basename "$ci_root")")" "$sha" "$result" "$at" "$failed" >"$tmpf"
 	mv -f "$tmpf" "$ci_root/.ci/last.json" || rm -f "$tmpf"
 }
+ci_done=0
 ci_on_exit() {
 	local rc=$1
+	if [ "$rc" = 0 ] && [ "$ci_done" != 1 ]; then
+		rc=1
+		echo "ci: stopped before the end of the script with status 0 (a set -u abort under bash 3.2?); treating it as red" >&2
+		[ -n "$ci_last_stage" ] || ci_last_stage=unknown
+	fi
 	if [ -n "$ci_cleanup" ]; then eval "$ci_cleanup" || true; fi
 	ci_record_last "$rc" || true
 	exit "$rc"
@@ -147,6 +153,7 @@ if [ "$stage" = --reader ]; then
 	echo "==> reader tests (ctest -L reader)"
 	build_and_test -L reader
 	echo "k3sm-sdk-cpp ci --reader: green"
+	ci_done=1
 	exit 0
 fi
 
@@ -154,6 +161,7 @@ if [ "$stage" = --notifier ]; then
 	echo "==> notifier tests (ctest -L notifier)"
 	build_and_test -L notifier
 	echo "k3sm-sdk-cpp ci --notifier: green"
+	ci_done=1
 	exit 0
 fi
 
@@ -239,6 +247,7 @@ if [ "$stage" = --stress ]; then
 	sed 's/^/    /' "$tmp/bench.log"
 	echo "    ok (a smoke run; real numbers need a full run on idle hardware)"
 	echo "k3sm-sdk-cpp ci --stress: green"
+	ci_done=1
 	exit 0
 fi
 
@@ -360,3 +369,4 @@ for st in --cshim --linux-vm; do
 done
 
 echo "k3sm-sdk-cpp ci: green"
+ci_done=1
