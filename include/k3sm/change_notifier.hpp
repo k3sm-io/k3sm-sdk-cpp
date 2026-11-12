@@ -219,7 +219,9 @@ private:
 
     // doorbell_slice is the longest single block on the doorbell. A producer
     // may bump the word without writing the doorbell, so wait re-checks the
-    // word at least this often while the doorbell is the wake source.
+    // word at least this often while the doorbell is the wake source. An idle
+    // waiter on a doorbell therefore wakes ten times a second, and the Swift
+    // SDK re-checks at the same 100 ms.
     static constexpr std::chrono::nanoseconds doorbell_slice = std::chrono::milliseconds(100);
 
     // slice_for returns the length of the next block for a wait with left

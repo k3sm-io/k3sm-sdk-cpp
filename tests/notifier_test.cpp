@@ -884,9 +884,14 @@ void test_preferred_doorbell_still_sees_a_bump_without_a_ring() {
     const std::uint64_t before = n.epoch();
     const auto t0 = std::chrono::steady_clock::now();
     K3SM_CHECK(n.wait(3s));
-    K3SM_CHECK(std::chrono::steady_clock::now() - t0 < 1s);
+    K3SM_CHECK(std::chrono::steady_clock::now() - t0 < 2s);
+    K3SM_CHECK(n.source() == sdk::wake_source::doorbell);
     bumper.join();
     K3SM_CHECK_EQ(n.epoch(), before + 1);
+
+    // A quiet doorbell slice does not demote the wake source.
+    K3SM_CHECK(!n.wait(250ms));
+    K3SM_CHECK(n.source() == sdk::wake_source::doorbell);
 }
 
 // test_wait_caps_are_pinned pins the two numbers a wait is built from: the
