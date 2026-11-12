@@ -66,20 +66,25 @@ Everything is in namespace `k3sm::sdk`.
 ```cpp
 #include <k3sm/budget.hpp>
 
+#include <algorithm>
+#include <cstdint>
+
 namespace sdk = k3sm::sdk;
 
-auto page = sdk::budget_page::open(sdk::default_page_path());
-if (!page) {
-    // page.error() is error::not_found (with sys_errno()) or error::truncated:
-    // no page on this node, so fall back to your own sizing.
-    return own_sizing();
-}
-auto s = page->read();
-if (!s) {
-    return own_sizing();  // abi_mismatch, truncated, corrupt, torn or stale
-}
-if (sdk::admit_ok(*s)) {
-    cap = std::min(cap, sdk::batch_slots(*s, slot_bytes));
+// cap is your own concurrency limit; slot_bytes is what one unit of work needs.
+std::int64_t size_batch(std::int64_t cap, std::int64_t slot_bytes) {
+    auto page = sdk::budget_page::open(sdk::default_page_path());
+    if (!page) {
+        // page.error() is error::not_found (with sys_errno()) or error::truncated:
+        // no page on this node, so keep your own sizing.
+        return cap;
+    }
+    auto s = page->read();
+    if (!s) {
+        return cap;  // abi_mismatch, truncated, corrupt, torn or stale
+    }
+    // batch_slots is 0 while the node does not admit, so this only lowers cap.
+    return std::min(cap, sdk::batch_slots(*s, slot_bytes));
 }
 ```
 
@@ -135,7 +140,9 @@ if (sdk::admit_ok(*s)) {
   the word, so nothing changes). One wait is cut into slices of at most 24
   hours. When the address wait fails for good, the notifier falls back to the
   doorbell if one is open, and only without a doorbell does it sleep and poll
-  the word, in steps of at most 1 millisecond.
+  the word, in steps of at most 1 millisecond. On macOS the address wait needs
+  macOS 14.4 or later at run time; on an older system the notifier starts on
+  the doorbell if one is open, and otherwise polls.
 
   A third argument, `change_notifier(page, doorbell_path, prefer)`, takes a
   `wake_source`: `wake_source::doorbell` waits on the doorbell from the start
