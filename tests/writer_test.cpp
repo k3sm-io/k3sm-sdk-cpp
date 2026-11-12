@@ -40,6 +40,8 @@ limitations under the License.
 #include <vector>
 
 #include <fcntl.h>
+#include <signal.h>
+#include <spawn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -1126,6 +1128,97 @@ void test_wake_and_doorbell() {
     ::unlink(bell.c_str());
 }
 
+// A publish the writer refuses leaves every byte of the page as it was, the
+// seq word included (still even), and the next valid publish succeeds.
+void test_refused_publish_leaves_page() {
+    const std::string page = page_path("refused.page");
+    const std::string lock = lock_path("refused.lock");
+    const unlinker guard{page, lock};
+    const sdk::snapshot darwin = golden("darwin.v1.page");
+    auto w = sdk::page_writer::open(page.c_str(), lock.c_str());
+    K3SM_CHECK(w.has_value());
+    if (!w) {
+        return;
+    }
+    K3SM_CHECK(w->publish(darwin).has_value());
+    const std::string before = k3sm_test::read_file(page);
+    sdk::snapshot bad = darwin;
+    bad.node_name_len = sdk::max_node_name_bytes + 1;
+    const auto refused = w->publish(bad);
+    K3SM_CHECK(!refused && refused.error() == sdk::error::node_name_too_long);
+    const std::string after = k3sm_test::read_file(page);
+    K3SM_CHECK_EQ(first_difference(before, after), -1);
+    K3SM_CHECK_EQ(get_u64(after, sdk::page_offset::seq) % 2, 0u);
+    const auto next = w->publish(darwin);
+    K3SM_CHECK(next.has_value() && *next == 4u);
+}
+
+// The writer's descriptors are close-on-exec: a child spawned while the
+// writer is open and outliving it does not keep the lock, so a new writer
+// opens on the same page and lock.
+void test_descriptors_close_on_exec() {
+    const std::string page = page_path("cloexec.page");
+    const std::string lock = lock_path("cloexec.lock");
+    const unlinker guard{page, lock};
+    pid_t child = -1;
+    {
+        auto w = sdk::page_writer::open(page.c_str(), lock.c_str());
+        K3SM_CHECK(w.has_value());
+        if (!w) {
+            return;
+        }
+        char sleep_path[] = "/bin/sleep";
+        char five[] = "5";
+        char* argv[] = {sleep_path, five, nullptr};
+        if (::posix_spawn(&child, sleep_path, nullptr, nullptr, argv, nullptr) != 0) {
+            k3sm_test::fail(__FILE__, __LINE__, "posix_spawn");
+            return;
+        }
+    }
+    // The writer is gone; the child still runs.
+    auto again = sdk::page_writer::open(page.c_str(), lock.c_str());
+    K3SM_CHECK(again.has_value());
+    if (!again) {
+        K3SM_CHECK(again.error() != sdk::error::writer_busy);
+    }
+    ::kill(child, SIGKILL);
+    int status = 0;
+    while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {
+    }
+}
+
+// A page path with no slash names a file in the working directory.
+void test_bare_page_name() {
+    const std::string dir = base_dir() + "/bare";
+    if (::mkdir(dir.c_str(), 0700) != 0 && errno != EEXIST) {
+        k3sm_test::fail(__FILE__, __LINE__, "mkdir");
+        return;
+    }
+    const std::string lock = lock_path("bare.lock");
+    const unlinker guard{dir + "/bare.page", lock};
+    const int cwd = ::open(".", O_RDONLY | O_CLOEXEC);
+    if (cwd < 0) {
+        k3sm_test::fail(__FILE__, __LINE__, "open .");
+        return;
+    }
+    if (::chdir(dir.c_str()) != 0) {
+        k3sm_test::fail(__FILE__, __LINE__, "chdir");
+        ::close(cwd);
+        return;
+    }
+    {
+        auto w = sdk::page_writer::open("bare.page", lock.c_str());
+        K3SM_CHECK(w.has_value());
+        if (w) {
+            K3SM_CHECK(w->publish(golden("darwin.v1.page")).has_value());
+        }
+    }
+    K3SM_CHECK(::fchdir(cwd) == 0);
+    ::close(cwd);
+    ::unlink((dir + "/bare.page").c_str());
+    ::rmdir(dir.c_str());
+}
+
 void cleanup() {
     for (const char* f : {"vectors.lock", "live.lock", "odd.lock", "rollback.lock", "short.lock", "wake.lock", "foreign.lock", "neggen.lock"}) {
         ::unlink(lock_path(f).c_str());
@@ -1160,6 +1253,9 @@ int main() {
     writer_test::test_resume_foreign_header_with_intact_magic();
     writer_test::test_short_file_grows_in_place();
     writer_test::test_wake_and_doorbell();
+    writer_test::test_refused_publish_leaves_page();
+    writer_test::test_descriptors_close_on_exec();
+    writer_test::test_bare_page_name();
     writer_test::cleanup();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "writer_test: %d failure(s)\n", k3sm_test::failures());
