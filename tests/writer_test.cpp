@@ -713,6 +713,79 @@ void test_resume_odd_seq() {
     ::unlink(page.c_str());
 }
 
+// A page of this ABI whose generation word reads as negative (as a signed
+// 64-bit value) cannot be continued: the next writer starts at generation 1.
+void test_resume_negative_generation() {
+    const std::string page = page_path("neggen.page");
+    const unlinker guard{page};
+    for (const std::int64_t stored : {std::int64_t{-1}, std::int64_t{-5}, INT64_MIN}) {
+        std::string bytes = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
+        put_u64(bytes, sdk::page_offset::seq, 10);
+        put_u64(bytes, sdk::page_offset::notify_epoch, 3);
+        put_u64(bytes, sdk::page_offset::generation, static_cast<std::uint64_t>(stored));
+        {
+            const int fd = ::open(page.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+            K3SM_CHECK(fd >= 0 && ::write(fd, bytes.data(), bytes.size()) == static_cast<ssize_t>(bytes.size()));
+            ::close(fd);
+        }
+        auto w = sdk::page_writer::open(page.c_str(), lock_path("neggen.lock").c_str());
+        K3SM_CHECK(w.has_value());
+        if (!w) {
+            continue;
+        }
+        if (w->generation() != 1) {
+            std::fprintf(stderr, "stored generation %lld: resumed at %lld, want 1\n",
+                         static_cast<long long>(stored), static_cast<long long>(w->generation()));
+            K3SM_CHECK(false);
+        }
+        // The page is of this ABI, so seq and notifyEpoch still carry over.
+        K3SM_CHECK_EQ(w->seq(), 10u);
+        K3SM_CHECK_EQ(w->epoch(), 3u);
+        K3SM_CHECK(w->publish(golden("darwin.v1.page")).has_value());
+        K3SM_CHECK_EQ(get_u64(k3sm_test::read_file(page), sdk::page_offset::generation), 1u);
+    }
+}
+
+// Sets the process umask for its lifetime and restores the previous one when
+// it leaves scope, an early return included.
+struct umask_guard {
+    mode_t previous;
+    explicit umask_guard(mode_t m) : previous(::umask(m)) {}
+    umask_guard(const umask_guard&) = delete;
+    umask_guard& operator=(const umask_guard&) = delete;
+    ~umask_guard() { ::umask(previous); }
+};
+
+// With no umask to narrow them, open creates the lock file 0600 and the page
+// and doorbell files 0644.
+void test_open_file_modes() {
+    const std::string page = page_path("modes.page");
+    const std::string lock = lock_path("modes.lock");
+    const std::string bell = page_path("modes.bell");
+    const unlinker guard{page, lock, bell};
+    const umask_guard mask(0);
+    auto w = sdk::page_writer::open(page.c_str(), lock.c_str(), bell.c_str());
+    K3SM_CHECK(w.has_value());
+    if (!w) {
+        return;
+    }
+    struct mode_case {
+        const std::string& path;
+        mode_t want;
+    };
+    const mode_case cases[] = {{lock, 0600}, {page, 0644}, {bell, 0644}};
+    for (const mode_case& c : cases) {
+        struct stat st {};
+        K3SM_CHECK(::stat(c.path.c_str(), &st) == 0);
+        const mode_t got = st.st_mode & 0777;
+        if (got != c.want) {
+            std::fprintf(stderr, "%s: mode %03o, want %03o\n", c.path.c_str(), static_cast<unsigned>(got),
+                         static_cast<unsigned>(c.want));
+            K3SM_CHECK(false);
+        }
+    }
+}
+
 // versions_word is the word holding the major, the minor and the header size.
 std::uint64_t versions_word(std::uint16_t minor) {
     return std::uint64_t{sdk::page_abi_major} | std::uint64_t{minor} << 16 |
@@ -988,7 +1061,7 @@ void test_wake_and_doorbell() {
 }
 
 void cleanup() {
-    for (const char* f : {"vectors.lock", "live.lock", "odd.lock", "rollback.lock", "short.lock", "wake.lock", "foreign.lock"}) {
+    for (const char* f : {"vectors.lock", "live.lock", "odd.lock", "rollback.lock", "short.lock", "wake.lock", "foreign.lock", "neggen.lock"}) {
         ::unlink(lock_path(f).c_str());
     }
     ::rmdir(page_dir().c_str());
@@ -1012,6 +1085,8 @@ int main() {
     writer_test::test_move_assignment();
     writer_test::test_doorbell_silent_when_not_due();
     writer_test::test_resume_odd_seq();
+    writer_test::test_resume_negative_generation();
+    writer_test::test_open_file_modes();
     writer_test::test_resume_header_store_order();
     writer_test::test_resume_rollback_page();
     writer_test::test_resume_foreign_header_with_intact_magic();
