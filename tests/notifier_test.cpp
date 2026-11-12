@@ -32,8 +32,10 @@ limitations under the License.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <fcntl.h>
 #include <signal.h>
@@ -67,6 +69,21 @@ std::string tmp_path(const char* name) {
     return std::string(K3SM_SDK_TEST_TMPDIR) + "/notifier_test." + std::to_string(::getpid()) +
            "." + name;
 }
+
+// remove_on_exit removes each named file, FIFO or empty directory when the
+// test returns on any path, including an early return after a failed check.
+struct remove_on_exit {
+    std::vector<std::string> paths;
+    remove_on_exit(std::initializer_list<std::string> p) : paths(p) {}
+    remove_on_exit(const remove_on_exit&) = delete;
+    remove_on_exit& operator=(const remove_on_exit&) = delete;
+    ~remove_on_exit() {
+        for (const std::string& p : paths) {
+            ::unlink(p.c_str());
+            ::rmdir(p.c_str());
+        }
+    }
+};
 
 // write_page copies the darwin golden page to path.
 bool write_page(const std::string& path) {
@@ -271,6 +288,7 @@ struct writer {
 
 void test_poll() {
     const std::string path = tmp_path("poll.page");
+    const remove_on_exit cleanup{path};
     K3SM_CHECK(write_page(path));
     auto page = sdk::budget_page::open(path.c_str());
     K3SM_CHECK(page.has_value());
@@ -299,11 +317,11 @@ void test_poll() {
     if (s) {
         K3SM_CHECK_EQ(s->notify_epoch, m.epoch());
     }
-    ::unlink(path.c_str());
 }
 
 void test_timeout() {
     const std::string path = tmp_path("timeout.page");
+    const remove_on_exit cleanup{path};
     K3SM_CHECK(write_page(path));
     auto page = sdk::budget_page::open(path.c_str());
     if (!page) {
@@ -321,12 +339,12 @@ void test_timeout() {
     K3SM_CHECK(waited < 2s);
     K3SM_CHECK(!n.wait(0ns));  // a zero timeout is a poll
     K3SM_CHECK(!n.wait(-5ms));
-    ::unlink(path.c_str());
 }
 
 // test_address_cross_process waits on the word while another process bumps it.
 void test_address_cross_process() {
     const std::string path = tmp_path("address.page");
+    const remove_on_exit cleanup{path};
     K3SM_CHECK(write_page(path));
     auto page = sdk::budget_page::open(path.c_str());
     if (!page) {
@@ -379,7 +397,6 @@ void test_address_cross_process() {
     K3SM_CHECK(n.source() == sdk::wake_source::address);  // never degraded to sleeping
 
     K3SM_CHECK_EQ(w.finish(), 0);
-    ::unlink(path.c_str());
 }
 
 // test_doorbell_cross_process waits on the producer's doorbell file: the
@@ -387,6 +404,7 @@ void test_address_cross_process() {
 void test_doorbell_cross_process() {
     const std::string path = tmp_path("doorbell.page");
     const std::string bell = tmp_path("doorbell.bell");
+    const remove_on_exit cleanup{path, bell};
     K3SM_CHECK(write_page(path));
     const int bfd = ::open(bell.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     K3SM_CHECK(bfd >= 0);
@@ -431,13 +449,12 @@ void test_doorbell_cross_process() {
     K3SM_CHECK(n.source() == sdk::wake_source::doorbell);
 #endif
     K3SM_CHECK_EQ(w.finish(), 0);
-    ::unlink(path.c_str());
-    ::unlink(bell.c_str());
 }
 
 // test_doorbell_absent keeps the primary when the producer has no doorbell.
 void test_doorbell_absent() {
     const std::string path = tmp_path("nobell.page");
+    const remove_on_exit cleanup{path};
     K3SM_CHECK(write_page(path));
     auto page = sdk::budget_page::open(path.c_str());
     if (!page) {
@@ -450,13 +467,13 @@ void test_doorbell_absent() {
     K3SM_CHECK(a.source() == sdk::wake_source::address);
     K3SM_CHECK(b.source() == sdk::wake_source::address);
 #endif
-    ::unlink(path.c_str());
 }
 
 // test_short_page: a mapping too short to hold notifyEpoch never reports a
 // change and never touches memory past its end.
 void test_short_page() {
     const std::string path = tmp_path("short.page");
+    const remove_on_exit cleanup{path};
     const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     K3SM_CHECK(fd >= 0);
     if (fd < 0) {
@@ -477,7 +494,6 @@ void test_short_page() {
     const auto t0 = std::chrono::steady_clock::now();
     K3SM_CHECK(!n.wait(10ms));
     K3SM_CHECK(std::chrono::steady_clock::now() - t0 >= 9ms);
-    ::unlink(path.c_str());
 }
 
 // test_notifier_seeded_from_snapshot_reports_intervening_bump: a consumer
@@ -486,6 +502,7 @@ void test_short_page() {
 // the bump at once instead of waiting for the next one.
 void test_notifier_seeded_from_snapshot_reports_intervening_bump() {
     const std::string path = tmp_path("seed.page");
+    const remove_on_exit cleanup{path};
     K3SM_CHECK(write_page(path));
     auto page = sdk::budget_page::open(path.c_str());
     if (!page) {
@@ -534,10 +551,10 @@ void test_notifier_seeded_from_snapshot_reports_intervening_bump() {
     moved.seed(before + 7);
     K3SM_CHECK_EQ(moved.epoch(), before);
     K3SM_CHECK(!moved.poll());
-    ::unlink(path.c_str());
 
     // A notifier over a page too short to hold notifyEpoch ignores seed.
     const std::string short_path = tmp_path("seed.short.page");
+    const remove_on_exit short_cleanup{short_path};
     const int fd = ::open(short_path.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     K3SM_CHECK(fd >= 0);
     if (fd < 0) {
@@ -549,14 +566,12 @@ void test_notifier_seeded_from_snapshot_reports_intervening_bump() {
     auto short_page = sdk::budget_page::open(short_path.c_str());
     if (!short_page) {
         k3sm_test::fail(__FILE__, __LINE__, "open short page");
-        ::unlink(short_path.c_str());
         return;
     }
     sdk::change_notifier sn(*short_page);
     sn.seed(42);
     K3SM_CHECK_EQ(sn.epoch(), std::uint64_t{0});
     K3SM_CHECK(!sn.poll());
-    ::unlink(short_path.c_str());
 }
 
 // guarded_wait runs n.wait(timeout) under a watchdog: if the wait has not
@@ -594,6 +609,7 @@ bool guarded_wait(sdk::change_notifier& n, const rw_page& rw, std::chrono::nanos
 // Each wait runs under guarded_wait, so a lost wake fails within about 5 s.
 void test_wait_max_timeout_no_overflow() {
     const std::string path = tmp_path("maxwait.page");
+    const remove_on_exit cleanup{path};
     K3SM_CHECK(write_page(path));
     auto page = sdk::budget_page::open(path.c_str());
     if (!page) {
@@ -627,7 +643,6 @@ void test_wait_max_timeout_no_overflow() {
     rw.bump();
     K3SM_CHECK(guarded_wait(n, rw, forever - 1ns, __LINE__));
     K3SM_CHECK_EQ(n.epoch(), first + 2);
-    ::unlink(path.c_str());
 }
 
 // test_doorbell_fifo_does_not_block_construction: a doorbell path that names
@@ -639,24 +654,21 @@ void test_wait_max_timeout_no_overflow() {
 void test_doorbell_fifo_does_not_block_construction() {
     const std::string path = tmp_path("fifo.page");
     const std::string bell = tmp_path("fifo.bell");
+    const remove_on_exit cleanup{path, bell};
     K3SM_CHECK(write_page(path));
     ::unlink(bell.c_str());
     if (::mkfifo(bell.c_str(), 0600) != 0) {
         k3sm_test::fail(__FILE__, __LINE__, "mkfifo");
-        ::unlink(bell.c_str());
-        ::unlink(path.c_str());
         return;
     }
     auto page = sdk::budget_page::open(path.c_str());
     if (!page) {
         k3sm_test::fail(__FILE__, __LINE__, "open");
-        ::unlink(bell.c_str());
         return;
     }
     rw_page rw(path);
     K3SM_CHECK(rw.base != nullptr);
     if (rw.base == nullptr) {
-        ::unlink(bell.c_str());
         return;
     }
 
@@ -702,8 +714,6 @@ void test_doorbell_fifo_does_not_block_construction() {
     K3SM_CHECK(guarded_wait(n, rw, 2s, __LINE__));
     bumper.join();
     K3SM_CHECK_EQ(n.epoch(), before + 1);
-    ::unlink(path.c_str());
-    ::unlink(bell.c_str());
 }
 
 // test_doorbell_directory_is_ignored: a doorbell path that names a
@@ -712,24 +722,22 @@ void test_doorbell_fifo_does_not_block_construction() {
 void test_doorbell_directory_is_ignored() {
     const std::string path = tmp_path("dirbell.page");
     const std::string bell = tmp_path("dirbell.bell");
+    const remove_on_exit cleanup{path, bell};
     K3SM_CHECK(write_page(path));
     ::rmdir(bell.c_str());
     ::unlink(bell.c_str());
     if (::mkdir(bell.c_str(), 0700) != 0) {
         k3sm_test::fail(__FILE__, __LINE__, "mkdir");
-        ::unlink(path.c_str());
         return;
     }
     auto page = sdk::budget_page::open(path.c_str());
     if (!page) {
         k3sm_test::fail(__FILE__, __LINE__, "open");
-        ::rmdir(bell.c_str());
         return;
     }
     rw_page rw(path);
     K3SM_CHECK(rw.base != nullptr);
     if (rw.base == nullptr) {
-        ::rmdir(bell.c_str());
         return;
     }
     const auto t0 = std::chrono::steady_clock::now();
@@ -747,8 +755,6 @@ void test_doorbell_directory_is_ignored() {
     K3SM_CHECK(guarded_wait(n, rw, 2s, __LINE__));
     bumper.join();
     K3SM_CHECK_EQ(n.epoch(), before + 1);
-    ::unlink(path.c_str());
-    ::rmdir(bell.c_str());
 }
 
 }  // namespace notifier_test
