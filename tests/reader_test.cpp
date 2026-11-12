@@ -984,6 +984,87 @@ void test_helpers() {
     K3SM_CHECK_EQ(sdk::batch_slots(*absent, 1), 0);      // no recommendation
 }
 
+// set_signal overwrites the value and warn threshold of id's record in s.
+void set_signal(sdk::snapshot& s, sdk::signal_id id, std::int64_t value, std::int64_t warn) {
+    for (std::size_t i = 0; i < s.signal_count; ++i) {
+        if (s.signals[i].id == id) {
+            s.signals[i].value = value;
+            s.signals[i].warn_threshold = warn;
+            return;
+        }
+    }
+    k3sm_test::fail(__FILE__, __LINE__, "no record of the signal");
+}
+
+// test_bytes_until_clamps_negative_inputs: a negative value or threshold
+// counts as 0 in either direction.
+void test_bytes_until_clamps_negative_inputs() {
+    using sdk::rung;
+    using sdk::signal_id;
+    const auto darwin = open_read(fixture("darwin.v1.page"));
+    K3SM_CHECK(darwin.has_value());
+    if (!darwin) {
+        return;
+    }
+    sdk::snapshot s = *darwin;
+    set_signal(s, signal_id::memory_available, -5, -10);
+    K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_available, rung::warn), 0);
+    set_signal(s, signal_id::memory_available, 5, -10);
+    K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_available, rung::warn), 5);
+    set_signal(s, signal_id::memory_swap, -10, -5);
+    K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_swap, rung::warn), 0);
+    set_signal(s, signal_id::memory_swap, -10, 5);
+    K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_swap, rung::warn), 5);
+}
+
+// test_batch_slots_nonpositive_recommendation: a zero or negative
+// safeAdditionalBytes gives no slot even while the node admits.
+void test_batch_slots_nonpositive_recommendation() {
+    const auto darwin = open_read(fixture("darwin.v1.page"));
+    K3SM_CHECK(darwin.has_value());
+    if (!darwin) {
+        return;
+    }
+    sdk::snapshot s = *darwin;
+    K3SM_CHECK(s.admit);
+    s.recommendation.safe_additional_bytes = 0;
+    K3SM_CHECK_EQ(sdk::batch_slots(s, 1), 0);
+    s.recommendation.safe_additional_bytes = -1 * gib;
+    K3SM_CHECK_EQ(sdk::batch_slots(s, 1), 0);
+}
+
+// test_open_short_file_is_truncated: a non-empty regular file of 64 bytes
+// opens (open fails only on an empty file) and the error comes from read.
+// 64 bytes hold the whole header line (offsets 0 to 63, up to seq), so read
+// checks the header before the size: the darwin fixture's first 64 bytes
+// pass magic, major and header size and fail the file size check with
+// error::truncated, while 64 zero bytes fail the magic with abi_mismatch.
+void test_open_short_file_is_truncated() {
+    const std::string prefix = read_file(fixture("darwin.v1.page")).substr(0, 64);
+    const struct {
+        std::string bytes;
+        sdk::error::kind want;
+    } cases[] = {
+        {prefix, sdk::error::truncated},
+        {std::string(64, '\0'), sdk::error::abi_mismatch},
+    };
+    for (const auto& c : cases) {
+        const std::string path = write_temp(c.bytes);
+        auto page = sdk::budget_page::open(path.c_str());
+        ::unlink(path.c_str());
+        K3SM_CHECK(page.has_value());
+        if (!page) {
+            continue;
+        }
+        K3SM_CHECK_EQ(page->size(), std::size_t{64});
+        const auto r = page->read_at(observed);
+        K3SM_CHECK(!r.has_value());
+        if (!r) {
+            K3SM_CHECK(r.error() == c.want);
+        }
+    }
+}
+
 void test_result_and_move() {
     sdk::result<int> ok = 7;
     K3SM_CHECK(ok && *ok == 7);
@@ -1023,6 +1104,9 @@ int main() {
     reader_test::test_minor_and_codes();
     reader_test::test_staleness();
     reader_test::test_helpers();
+    reader_test::test_bytes_until_clamps_negative_inputs();
+    reader_test::test_batch_slots_nonpositive_recommendation();
+    reader_test::test_open_short_file_is_truncated();
     reader_test::test_result_and_move();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "reader_test: %d failure(s)\n", k3sm_test::failures());

@@ -706,6 +706,51 @@ void test_doorbell_fifo_does_not_block_construction() {
     ::unlink(bell.c_str());
 }
 
+// test_doorbell_directory_is_ignored: a doorbell path that names a
+// directory is not a doorbell. The constructor returns at once, keeps the
+// word on Darwin, and a bump with a wake is still reported by wait.
+void test_doorbell_directory_is_ignored() {
+    const std::string path = tmp_path("dirbell.page");
+    const std::string bell = tmp_path("dirbell.bell");
+    K3SM_CHECK(write_page(path));
+    ::rmdir(bell.c_str());
+    ::unlink(bell.c_str());
+    if (::mkdir(bell.c_str(), 0700) != 0) {
+        k3sm_test::fail(__FILE__, __LINE__, "mkdir");
+        ::unlink(path.c_str());
+        return;
+    }
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        ::rmdir(bell.c_str());
+        return;
+    }
+    rw_page rw(path);
+    K3SM_CHECK(rw.base != nullptr);
+    if (rw.base == nullptr) {
+        ::rmdir(bell.c_str());
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    sdk::change_notifier n(*page, bell.c_str(), sdk::wake_source::doorbell);
+    K3SM_CHECK(std::chrono::steady_clock::now() - t0 < 2s);
+#if defined(__APPLE__)
+    K3SM_CHECK(n.source() == sdk::wake_source::address);
+#endif
+    std::thread bumper([&rw] {
+        std::this_thread::sleep_for(20ms);
+        rw.bump();
+        rw.wake();
+    });
+    const std::uint64_t before = n.epoch();
+    K3SM_CHECK(guarded_wait(n, rw, 2s, __LINE__));
+    bumper.join();
+    K3SM_CHECK_EQ(n.epoch(), before + 1);
+    ::unlink(path.c_str());
+    ::rmdir(bell.c_str());
+}
+
 }  // namespace notifier_test
 
 int main(int argc, char** argv) {
@@ -723,6 +768,7 @@ int main(int argc, char** argv) {
     notifier_test::test_notifier_seeded_from_snapshot_reports_intervening_bump();
     notifier_test::test_wait_max_timeout_no_overflow();
     notifier_test::test_doorbell_fifo_does_not_block_construction();
+    notifier_test::test_doorbell_directory_is_ignored();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "notifier_test: %d failure(s)\n", k3sm_test::failures());
         return 1;
