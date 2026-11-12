@@ -525,12 +525,72 @@ void test_notifier_seeded_from_snapshot_reports_intervening_bump() {
     sdk::change_notifier same(*page);
     same.seed(bumped);
     K3SM_CHECK(!same.poll());
+
+    // A moved-from notifier ignores seed.
+    sdk::change_notifier moved(*page);
+    sdk::change_notifier taker(std::move(moved));
+    const std::uint64_t before = moved.epoch();  // deliberate use after move
+    moved.seed(before + 7);
+    K3SM_CHECK_EQ(moved.epoch(), before);
+    K3SM_CHECK(!moved.poll());
     ::unlink(path.c_str());
+
+    // A notifier over a page too short to hold notifyEpoch ignores seed.
+    const std::string short_path = tmp_path("seed.short.page");
+    const int fd = ::open(short_path.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    K3SM_CHECK(fd >= 0);
+    if (fd < 0) {
+        return;
+    }
+    const char bytes[64] = {};
+    K3SM_CHECK(::write(fd, bytes, sizeof bytes) == static_cast<ssize_t>(sizeof bytes));
+    ::close(fd);
+    auto short_page = sdk::budget_page::open(short_path.c_str());
+    if (!short_page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open short page");
+        ::unlink(short_path.c_str());
+        return;
+    }
+    sdk::change_notifier sn(*short_page);
+    sn.seed(42);
+    K3SM_CHECK_EQ(sn.epoch(), std::uint64_t{0});
+    K3SM_CHECK(!sn.poll());
+    ::unlink(short_path.c_str());
+}
+
+// guarded_wait runs n.wait(timeout) under a watchdog: if the wait has not
+// returned after the bound, the watchdog bumps and wakes the word so the wait
+// returns, and the lost wake is reported as a failure instead of a hang.
+bool guarded_wait(sdk::change_notifier& n, const rw_page& rw, std::chrono::nanoseconds timeout,
+                  int line) {
+    constexpr auto bound = 5s;
+    std::atomic<bool> done{false};
+    std::atomic<bool> fired{false};
+    std::thread watchdog([&] {
+        const auto end = std::chrono::steady_clock::now() + bound;
+        while (!done.load(std::memory_order_acquire)) {
+            if (std::chrono::steady_clock::now() >= end) {
+                fired.store(true, std::memory_order_release);
+                rw.bump();
+                rw.wake();
+                return;
+            }
+            std::this_thread::sleep_for(5ms);
+        }
+    });
+    const bool woke = n.wait(timeout);
+    done.store(true, std::memory_order_release);
+    watchdog.join();
+    if (fired.load(std::memory_order_acquire)) {
+        k3sm_test::fail(__FILE__, line, "unbounded wait lost its wake (watchdog fired)");
+    }
+    return woke;
 }
 
 // test_wait_max_timeout_no_overflow: nanoseconds::max() is "wait forever".
 // Adding it to now() overflows the clock's signed count, which the
 // UndefinedBehaviorSanitizer build aborts on; the deadline must saturate.
+// Each wait runs under guarded_wait, so a lost wake fails within about 5 s.
 void test_wait_max_timeout_no_overflow() {
     const std::string path = tmp_path("maxwait.page");
     K3SM_CHECK(write_page(path));
@@ -549,7 +609,7 @@ void test_wait_max_timeout_no_overflow() {
     // A change already pending: the wait reports it without blocking.
     sdk::change_notifier n(*page);
     const std::uint64_t first = rw.bump();
-    K3SM_CHECK(n.wait(forever));
+    K3SM_CHECK(guarded_wait(n, rw, forever, __LINE__));
     K3SM_CHECK_EQ(n.epoch(), first);
 
     // A change that arrives while the wait blocks with no deadline.
@@ -558,13 +618,13 @@ void test_wait_max_timeout_no_overflow() {
         rw.bump();
         rw.wake();
     });
-    K3SM_CHECK(n.wait(forever));
+    K3SM_CHECK(guarded_wait(n, rw, forever, __LINE__));
     bumper.join();
     K3SM_CHECK_EQ(n.epoch(), first + 1);
 
     // A timeout just short of the limit takes the same path.
     rw.bump();
-    K3SM_CHECK(n.wait(forever - 1ns));
+    K3SM_CHECK(guarded_wait(n, rw, forever - 1ns, __LINE__));
     K3SM_CHECK_EQ(n.epoch(), first + 2);
     ::unlink(path.c_str());
 }
