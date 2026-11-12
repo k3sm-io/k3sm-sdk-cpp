@@ -479,6 +479,96 @@ void test_short_page() {
     ::unlink(path.c_str());
 }
 
+// test_notifier_seeded_from_snapshot_reports_intervening_bump: a consumer
+// reads a snapshot, the producer bumps, then the consumer builds its
+// notifier. Seeded from the snapshot's notify_epoch, the first wait reports
+// the bump at once instead of waiting for the next one.
+void test_notifier_seeded_from_snapshot_reports_intervening_bump() {
+    const std::string path = tmp_path("seed.page");
+    K3SM_CHECK(write_page(path));
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        return;
+    }
+    rw_page rw(path);
+    K3SM_CHECK(rw.base != nullptr);
+    const auto s = page->read_at(1792411200);
+    K3SM_CHECK(s.has_value());
+    if (!s || rw.base == nullptr) {
+        return;
+    }
+    const std::uint64_t bumped = rw.bump();  // the intervening change
+    K3SM_CHECK(bumped != s->notify_epoch);
+
+    // Unseeded, the notifier starts at the live word and misses it.
+    sdk::change_notifier late(*page);
+    K3SM_CHECK_EQ(late.epoch(), bumped);
+    K3SM_CHECK(!late.poll());
+
+    sdk::change_notifier n(*page);
+    n.seed(s->notify_epoch);
+    K3SM_CHECK_EQ(n.epoch(), s->notify_epoch);
+    const auto t0 = std::chrono::steady_clock::now();
+    K3SM_CHECK(n.wait(5s));
+    K3SM_CHECK(std::chrono::steady_clock::now() - t0 < 1s);
+    K3SM_CHECK_EQ(n.epoch(), bumped);
+    K3SM_CHECK(!n.poll());  // reported once
+
+    // Seeding the doorbell form works the same way.
+    sdk::change_notifier d(*page, nullptr);
+    d.seed(s->notify_epoch);
+    K3SM_CHECK(d.poll());
+    K3SM_CHECK_EQ(d.epoch(), bumped);
+
+    // Seeded with the live epoch, there is nothing to report.
+    sdk::change_notifier same(*page);
+    same.seed(bumped);
+    K3SM_CHECK(!same.poll());
+    ::unlink(path.c_str());
+}
+
+// test_wait_max_timeout_no_overflow: nanoseconds::max() is "wait forever".
+// Adding it to now() overflows the clock's signed count, which the
+// UndefinedBehaviorSanitizer build aborts on; the deadline must saturate.
+void test_wait_max_timeout_no_overflow() {
+    const std::string path = tmp_path("maxwait.page");
+    K3SM_CHECK(write_page(path));
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        return;
+    }
+    rw_page rw(path);
+    K3SM_CHECK(rw.base != nullptr);
+    if (rw.base == nullptr) {
+        return;
+    }
+    constexpr auto forever = std::chrono::nanoseconds::max();
+
+    // A change already pending: the wait reports it without blocking.
+    sdk::change_notifier n(*page);
+    const std::uint64_t first = rw.bump();
+    K3SM_CHECK(n.wait(forever));
+    K3SM_CHECK_EQ(n.epoch(), first);
+
+    // A change that arrives while the wait blocks with no deadline.
+    std::thread bumper([&rw] {
+        std::this_thread::sleep_for(20ms);
+        rw.bump();
+        rw.wake();
+    });
+    K3SM_CHECK(n.wait(forever));
+    bumper.join();
+    K3SM_CHECK_EQ(n.epoch(), first + 1);
+
+    // A timeout just short of the limit takes the same path.
+    rw.bump();
+    K3SM_CHECK(n.wait(forever - 1ns));
+    K3SM_CHECK_EQ(n.epoch(), first + 2);
+    ::unlink(path.c_str());
+}
+
 }  // namespace notifier_test
 
 int main(int argc, char** argv) {
@@ -493,6 +583,8 @@ int main(int argc, char** argv) {
     notifier_test::test_doorbell_cross_process();
     notifier_test::test_doorbell_absent();
     notifier_test::test_short_page();
+    notifier_test::test_notifier_seeded_from_snapshot_reports_intervening_bump();
+    notifier_test::test_wait_max_timeout_no_overflow();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "notifier_test: %d failure(s)\n", k3sm_test::failures());
         return 1;

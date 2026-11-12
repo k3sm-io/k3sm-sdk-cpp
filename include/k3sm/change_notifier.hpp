@@ -78,7 +78,7 @@ enum class wake_source : std::uint8_t {
 
 // change_notifier reports changes of one page's notifyEpoch word. It
 // remembers the last epoch it reported (at first the epoch at
-// construction) and reports a change once. The page must outlive it. It is
+// construction, or the one given to seed) and reports a change once. The page must outlive it. It is
 // move-only; use one notifier per waiting thread.
 class change_notifier {
 public:
@@ -156,11 +156,18 @@ public:
     // that leaves the epoch where it was is not reported; the wait goes on
     // until the deadline. The new epoch may be several bumps past the last
     // one when the producer changed more than once before the wait woke.
+    // A timeout past the clock's range, such as nanoseconds::max(), waits
+    // with no deadline.
     bool wait(std::chrono::nanoseconds timeout) noexcept {
         if (timeout <= std::chrono::nanoseconds::zero()) {
             return poll();
         }
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        using clock = std::chrono::steady_clock;
+        const auto now = clock::now();
+        // The deadline saturates: now + timeout would overflow the clock's
+        // signed count for a timeout near nanoseconds::max().
+        const auto deadline =
+            timeout >= clock::time_point::max() - now ? clock::time_point::max() : now + timeout;
         while (true) {
             if (poll()) {
                 return true;
@@ -170,6 +177,17 @@ public:
                 return false;
             }
             block(std::chrono::duration_cast<std::chrono::nanoseconds>(left));
+        }
+    }
+
+    // seed sets the last reported epoch to e, the notify_epoch of a
+    // snapshot the caller already read. A bump between that read and the
+    // notifier's construction is then reported by the next poll or wait at
+    // once instead of being taken as already seen. A notifier whose page is
+    // too short to hold notifyEpoch ignores it.
+    void seed(std::uint64_t e) noexcept {
+        if (word_ != nullptr) {
+            last_ = e;
         }
     }
 
