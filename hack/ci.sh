@@ -17,10 +17,13 @@
 #   4. the version check: tag, CMake version and generated header agree
 #      (hack/verify-version.sh, after its self-test,
 #      hack/verify-version-selftest.sh)
-#   4a. the sanitizer requirement can fail and honours only its waiver
+#   4a. the sanitizer requirement can fail and honours only its waiver, no
+#      script under hack/ sets that waiver, and hack/ci.sh and
+#      hack/linux-test.sh each call require_sanitizers
 #      (hack/verify-sanitizers-selftest.sh)
-#   4b. every ctest call fails when it selects no test
-#      (hack/verify-ctest-selftest.sh)
+#   4b. every ctest call in hack/ci.sh and hack/linux-test.sh carries
+#      --no-tests=error, so a call that selects no test fails (a static scan,
+#      hack/verify-ctest-selftest.sh)
 #   5. shellcheck over every hack/**/*.sh, and hack/linux-test.sh (the
 #      entry point on a Linux host) refuses on any other host
 #   6. every C and C++ file carries the Apache-2.0 header
@@ -28,6 +31,9 @@
 #   8. the dependency supply-chain check: its self-test, then the live tree
 #   9. the vendored page fixtures match their SHA256SUMS
 #      (hack/verify-fixtures.sh, after its self-test)
+#   then the bare gate runs the notifier stage (--notifier) and the
+#   compile-extras stage (--compile-extras), and ends with the two placeholder
+#   stages, --cshim and --linux-vm, which only print a notice.
 #
 # A stage name as the first argument runs that stage alone:
 #   --reader    the page reader: the fixture check, then the reader tests
