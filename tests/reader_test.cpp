@@ -1136,6 +1136,29 @@ void test_bytes_until_clamps_negative_inputs() {
     K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_swap, rung::warn), 5);
 }
 
+// test_bytes_until_int64_extremes: a negative threshold is clamped to 0
+// before the subtraction, so the largest value against the most negative
+// thresholds gives the whole value on a falling signal and 0 on a rising
+// one, with no signed overflow.
+void test_bytes_until_int64_extremes() {
+    using sdk::rung;
+    using sdk::signal_id;
+    constexpr std::int64_t max = std::numeric_limits<std::int64_t>::max();
+    constexpr std::int64_t min = std::numeric_limits<std::int64_t>::min();
+    const auto darwin = open_read(fixture("darwin.v1.page"));
+    K3SM_CHECK(darwin.has_value());
+    if (!darwin) {
+        return;
+    }
+    sdk::snapshot s = *darwin;
+    for (const std::int64_t warn : {std::int64_t{-1}, min + 1, min}) {
+        set_signal(s, signal_id::memory_available, max, warn);
+        K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_available, rung::warn), max);
+        set_signal(s, signal_id::memory_swap, max, warn);
+        K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_swap, rung::warn), 0);
+    }
+}
+
 // test_bytes_until_rungs_and_direction: each rung reads its own threshold,
 // a falling signal measures value - threshold and a rising one threshold -
 // value, and both clamp to 0 at or past the rung.
@@ -1686,6 +1709,7 @@ int main() {
     reader_test::test_staleness_edges();
     reader_test::test_helpers();
     reader_test::test_bytes_until_clamps_negative_inputs();
+    reader_test::test_bytes_until_int64_extremes();
     reader_test::test_bytes_until_rungs_and_direction();
     reader_test::test_bytes_until_nothing_to_measure();
     reader_test::test_batch_slots_nonpositive_recommendation();
