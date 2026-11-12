@@ -257,6 +257,21 @@ void phase_file(std::chrono::milliseconds length) {
     ::mkdir(state_dir.c_str(), 0700);
     const std::string page = page_dir + "/budget.v1.page";
     const std::string lock = state_dir + "/writer.lock";
+    // Declared before the writer, maps and threads so it runs last, on every exit path.
+    struct tree_cleanup {
+        const std::string& page;
+        const std::string& lock;
+        const std::string& page_dir;
+        const std::string& state_dir;
+        const std::string& dir;
+        ~tree_cleanup() {
+            ::unlink(page.c_str());
+            ::unlink(lock.c_str());
+            ::rmdir(page_dir.c_str());
+            ::rmdir(state_dir.c_str());
+            ::rmdir(dir.c_str());
+        }
+    } cleanup{page, lock, page_dir, state_dir, dir};
     {
         auto w = sdk::page_writer::open(page.c_str(), lock.c_str());
         K3SM_CHECK(w.has_value());
@@ -296,11 +311,6 @@ void phase_file(std::chrono::milliseconds length) {
         }
         check("page file", ts, k);
     }
-    ::unlink(page.c_str());
-    ::unlink(lock.c_str());
-    ::rmdir(page_dir.c_str());
-    ::rmdir(state_dir.c_str());
-    ::rmdir(dir.c_str());
 }
 
 }  // namespace threads_stress
