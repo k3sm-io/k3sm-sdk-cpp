@@ -1136,6 +1136,72 @@ void test_bytes_until_clamps_negative_inputs() {
     K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_swap, rung::warn), 5);
 }
 
+// test_bytes_until_rungs_and_direction: each rung reads its own threshold,
+// a falling signal measures value - threshold and a rising one threshold -
+// value, and both clamp to 0 at or past the rung.
+void test_bytes_until_rungs_and_direction() {
+    using sdk::rung;
+    using sdk::signal_id;
+    const auto darwin = open_read(fixture("darwin.v1.page"));
+    K3SM_CHECK(darwin.has_value());
+    if (!darwin) {
+        return;
+    }
+    sdk::snapshot s = *darwin;
+    set_signal(s, signal_id::memory_available, 100 * mib, 50 * mib);
+    for (std::size_t i = 0; i < s.signal_count; ++i) {
+        if (s.signals[i].id == signal_id::memory_available) {
+            s.signals[i].critical_threshold = 10 * mib;
+            s.signals[i].evict_soft_threshold = 20 * mib;
+        }
+    }
+    K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_available, rung::critical), 90 * mib);
+    K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_available, rung::evict_soft), 80 * mib);
+    set_signal(s, signal_id::memory_swap, 300 * mib, 200 * mib);
+    K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_swap, rung::warn), 0);  // past it
+    set_signal(s, signal_id::memory_swap, 200 * mib, 200 * mib);
+    K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_swap, rung::warn), 0);  // at it
+}
+
+// test_bytes_until_nothing_to_measure: a present record whose value is
+// absent, or whose unit is not bytes, gives no answer for any rung.
+void test_bytes_until_nothing_to_measure() {
+    using sdk::rung;
+    using sdk::signal_id;
+    const auto darwin = open_read(fixture("darwin.v1.page"));
+    K3SM_CHECK(darwin.has_value());
+    if (!darwin) {
+        return;
+    }
+    const rung rungs[] = {rung::warn, rung::admit_stop, rung::critical, rung::evict_soft, rung::evict_hard};
+    sdk::snapshot s = *darwin;
+    sdk::signal_record* rec = nullptr;
+    for (std::size_t i = 0; i < s.signal_count; ++i) {
+        if (s.signals[i].id == signal_id::memory_available) {
+            rec = &s.signals[i];
+        }
+    }
+    K3SM_CHECK(rec != nullptr);
+    if (rec == nullptr) {
+        return;
+    }
+    rec->value = 100 * mib;
+    for (rung r : rungs) {
+        rec->warn_threshold = rec->admit_stop_threshold = rec->critical_threshold = 10 * mib;
+        rec->evict_soft_threshold = rec->evict_hard_threshold = 10 * mib;
+        K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_available, r), 90 * mib);  // control
+    }
+    rec->value = std::nullopt;
+    for (rung r : rungs) {
+        K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_available, r), none);
+    }
+    rec->value = 100 * mib;
+    rec->unit = sdk::unit::permille;
+    for (rung r : rungs) {
+        K3SM_CHECK_EQ(sdk::bytes_until(s, signal_id::memory_available, r), none);
+    }
+}
+
 // test_batch_slots_nonpositive_recommendation: a zero or negative
 // safeAdditionalBytes gives no slot even while the node admits.
 void test_batch_slots_nonpositive_recommendation() {
@@ -1408,6 +1474,8 @@ int main() {
     reader_test::test_staleness_edges();
     reader_test::test_helpers();
     reader_test::test_bytes_until_clamps_negative_inputs();
+    reader_test::test_bytes_until_rungs_and_direction();
+    reader_test::test_bytes_until_nothing_to_measure();
     reader_test::test_batch_slots_nonpositive_recommendation();
     reader_test::test_open_short_file_is_truncated();
     reader_test::test_corrupt_beats_stale();
