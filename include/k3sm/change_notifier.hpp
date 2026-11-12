@@ -217,6 +217,11 @@ private:
     // is waited out in several slices.
     static constexpr std::chrono::nanoseconds max_slice = std::chrono::hours(24);
 
+    // doorbell_slice is the longest single block on the doorbell. A producer
+    // may bump the word without writing the doorbell, so wait re-checks the
+    // word at least this often while the doorbell is the wake source.
+    static constexpr std::chrono::nanoseconds doorbell_slice = std::chrono::milliseconds(100);
+
     // slice_for returns the length of the next block for a wait with left
     // still to go: left itself, capped at max_slice.
     static std::chrono::nanoseconds slice_for(std::chrono::nanoseconds left) noexcept {
@@ -258,7 +263,7 @@ private:
             }
             return;
         case wake_source::doorbell:
-            if (!block_doorbell(left)) {
+            if (!block_doorbell(std::min(left, doorbell_slice))) {
                 source_ = wake_source::sleep;
             }
             return;
