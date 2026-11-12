@@ -158,9 +158,27 @@ inline psi_resource decode_psi_resource(const body_words& b, std::size_t resourc
     return psi_resource{decode_psi_line(b, resource, 0), decode_psi_line(b, resource, 1)};
 }
 
+// required_code reads a structural code where 0 is not legal: 0 is
+// error::corrupt and a code the table does not hold error::abi_mismatch.
+template <class E>
+result<E> required_code(const body_words& b, std::size_t offset, std::uint64_t count) noexcept {
+    const std::uint64_t c = b.u64(offset);
+    if (c == 0) {
+        return error::corrupt;
+    }
+    if (c > count) {
+        return error::abi_mismatch;
+    }
+    return static_cast<E>(c);
+}
+
 // decode fills s from a stable body copy. It returns error::corrupt for a
 // field outside its domain, error::abi_mismatch for a structural code the
-// tables do not hold, and otherwise success.
+// tables do not hold, and otherwise success. The first defect in field order
+// wins up to the signal slots: a zero writer period, a zero or unknown
+// platform or level, an out-of-domain gpuPresent, then per slot an unknown
+// id, a zero or unknown unit and an unknown sharedWith return at once. An
+// unknown code after the slots is abi_mismatch once the whole body is read.
 inline result<snapshot> decode(const body_words& b, snapshot& s) noexcept {
     namespace off = page_offset;
     s.node_name_len = b.u64(off::node_name_len);
@@ -175,8 +193,20 @@ inline result<snapshot> decode(const body_words& b, snapshot& s) noexcept {
     bool bad = false;
     s.generation = b.i64(off::generation);
     s.writer_period_seconds = b.i64(off::writer_period_seconds);
+    if (s.writer_period_seconds < 1) {
+        return error::corrupt;
+    }
     s.observed_at = b.i64(off::observed_at);
-    s.platform = structural_code<platform>(b, off::platform, platform_codes, &bad);
+    const result<platform> plat = required_code<platform>(b, off::platform, platform_codes);
+    if (!plat) {
+        return plat.error();
+    }
+    s.platform = *plat;
+    const result<level> lvl = required_code<level>(b, off::level, level_codes);
+    if (!lvl) {
+        return lvl.error();
+    }
+    s.level = *lvl;
 
     s.capacity = capacity{
         b.opt(off::cpu_capacity_milli),       b.opt(off::cpu_system_reserve_milli),
@@ -193,7 +223,6 @@ inline result<snapshot> decode(const body_words& b, snapshot& s) noexcept {
         }
         s.capacity.gpu_present = *gpu == 1;
     }
-    s.level = structural_code<level>(b, off::level, level_codes, &bad);
 
     if (s.platform == platform::darwin) {
         s.darwin = darwin_signals{
@@ -225,9 +254,17 @@ inline result<snapshot> decode(const body_words& b, snapshot& s) noexcept {
         if (b.u64(base + f::id) == 0) {
             continue;
         }
+        const result<signal_id> id = required_code<signal_id>(b, base + f::id, signal_codes);
+        if (!id) {
+            return id.error();
+        }
+        const result<unit> u = required_code<unit>(b, base + f::unit, unit_codes);
+        if (!u) {
+            return u.error();
+        }
         signal_record& r = s.signals[s.signal_count++];
-        r.id = structural_code<signal_id>(b, base + f::id, signal_codes, &bad);
-        r.unit = structural_code<unit>(b, base + f::unit, unit_codes, &bad);
+        r.id = *id;
+        r.unit = *u;
         r.value = b.opt(base + f::value);
         r.warn_threshold = b.opt(base + f::warn_threshold);
         r.admit_stop_threshold = b.opt(base + f::admit_stop_threshold);
@@ -246,7 +283,11 @@ inline result<snapshot> decode(const body_words& b, snapshot& s) noexcept {
         r.trend = vocabulary_code<trend>(b, base + f::trend, trend_codes);
         r.limiting_resource =
             vocabulary_code<limiting_resource>(b, base + f::limiting_resource, limiting_resource_codes);
-        r.shared_with = structural_code<signal_id>(b, base + f::shared_with, signal_codes, &bad);
+        bool shared_bad = false;
+        r.shared_with = structural_code<signal_id>(b, base + f::shared_with, signal_codes, &shared_bad);
+        if (shared_bad) {
+            return error::abi_mismatch;
+        }
     }
 
     s.admit = b.flag(off::admit);
