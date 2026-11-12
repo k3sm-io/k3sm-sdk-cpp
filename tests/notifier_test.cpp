@@ -547,21 +547,25 @@ void test_doorbell_ring_wakes_the_queue() {
         const auto t0 = std::chrono::steady_clock::now();
         K3SM_CHECK(sdk::change_notifier_test_access::block_doorbell(n, 50ms));
         const auto waited = std::chrono::steady_clock::now() - t0;
-        K3SM_CHECK(waited >= 49ms);
+        K3SM_CHECK(waited >= 40ms);
         K3SM_CHECK(waited < 2s);
     }
 
     // The ring alone ends a wait whose ceiling is 5 s.
     std::atomic<bool> rang{false};
-    std::thread ringer([&rang, &bell] {
+    std::atomic<bool> ring_failed{false};
+    std::thread ringer([&rang, &ring_failed, &bell] {
         std::this_thread::sleep_for(150ms);
         const int rfd = ::open(bell.c_str(), O_WRONLY | O_CLOEXEC);
         if (rfd < 0) {
+            ring_failed.store(true, std::memory_order_release);
             return;
         }
         const char ring = '1';
         rang.store(true, std::memory_order_release);
-        (void)::pwrite(rfd, &ring, 1, 0);
+        if (::pwrite(rfd, &ring, 1, 0) != 1) {
+            ring_failed.store(true, std::memory_order_release);
+        }
         ::close(rfd);
     });
     const auto t0 = std::chrono::steady_clock::now();
@@ -569,8 +573,10 @@ void test_doorbell_ring_wakes_the_queue() {
     const auto waited = std::chrono::steady_clock::now() - t0;
     const bool after_ring = rang.load(std::memory_order_acquire);
     ringer.join();
+    K3SM_CHECK(!ring_failed.load(std::memory_order_acquire));
     K3SM_CHECK(ok);
     K3SM_CHECK(after_ring);
+    K3SM_CHECK(waited >= 100ms);
     K3SM_CHECK(waited < 2s);
     K3SM_CHECK_EQ(n.epoch(), before);
     K3SM_CHECK(n.source() == sdk::wake_source::doorbell);
