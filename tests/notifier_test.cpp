@@ -39,6 +39,7 @@ limitations under the License.
 #include <signal.h>
 #include <spawn.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -629,6 +630,79 @@ void test_wait_max_timeout_no_overflow() {
     ::unlink(path.c_str());
 }
 
+// test_doorbell_fifo_does_not_block_construction: a doorbell path that names
+// a FIFO with no writer is not a doorbell. Opening a FIFO for reading blocks
+// until a writer appears (O_EVTONLY included), so the constructor must not
+// wait for one: it returns at once, ignores the FIFO and keeps the word. A
+// watchdog opens the FIFO for writing after about 3 s, which releases an
+// open that blocked, so a regression fails instead of hanging.
+void test_doorbell_fifo_does_not_block_construction() {
+    const std::string path = tmp_path("fifo.page");
+    const std::string bell = tmp_path("fifo.bell");
+    K3SM_CHECK(write_page(path));
+    ::unlink(bell.c_str());
+    K3SM_CHECK(::mkfifo(bell.c_str(), 0600) == 0);
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        ::unlink(bell.c_str());
+        return;
+    }
+    rw_page rw(path);
+    K3SM_CHECK(rw.base != nullptr);
+    if (rw.base == nullptr) {
+        ::unlink(bell.c_str());
+        return;
+    }
+
+    std::atomic<bool> done{false};
+    std::atomic<bool> fired{false};
+    std::thread watchdog([&] {
+        const auto end = std::chrono::steady_clock::now() + 3s;
+        while (!done.load(std::memory_order_acquire)) {
+            if (std::chrono::steady_clock::now() >= end) {
+                fired.store(true, std::memory_order_release);
+                // O_RDWR never blocks on a FIFO and counts as a writer, so it
+                // releases a reader blocked in open.
+                const int wfd = ::open(bell.c_str(), O_RDWR | O_CLOEXEC);
+                while (!done.load(std::memory_order_acquire)) {
+                    std::this_thread::sleep_for(5ms);
+                }
+                if (wfd >= 0) {
+                    ::close(wfd);
+                }
+                return;
+            }
+            std::this_thread::sleep_for(5ms);
+        }
+    });
+    const auto t0 = std::chrono::steady_clock::now();
+    sdk::change_notifier n(*page, bell.c_str(), sdk::wake_source::doorbell);
+    const auto took = std::chrono::steady_clock::now() - t0;
+    done.store(true, std::memory_order_release);
+    watchdog.join();
+    if (fired.load(std::memory_order_acquire)) {
+        k3sm_test::fail(__FILE__, __LINE__, "construction blocked on the FIFO doorbell");
+    }
+    K3SM_CHECK(took < 1s);
+#if defined(__APPLE__) || defined(__linux__)
+    K3SM_CHECK(n.source() == sdk::wake_source::address);
+#endif
+
+    // The notifier still reports a bump through its fallback source.
+    std::thread bumper([&rw] {
+        std::this_thread::sleep_for(20ms);
+        rw.bump();
+        rw.wake();
+    });
+    const std::uint64_t before = n.epoch();
+    K3SM_CHECK(guarded_wait(n, rw, 2s, __LINE__));
+    bumper.join();
+    K3SM_CHECK_EQ(n.epoch(), before + 1);
+    ::unlink(path.c_str());
+    ::unlink(bell.c_str());
+}
+
 }  // namespace notifier_test
 
 int main(int argc, char** argv) {
@@ -645,6 +719,7 @@ int main(int argc, char** argv) {
     notifier_test::test_short_page();
     notifier_test::test_notifier_seeded_from_snapshot_reports_intervening_bump();
     notifier_test::test_wait_max_timeout_no_overflow();
+    notifier_test::test_doorbell_fifo_does_not_block_construction();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "notifier_test: %d failure(s)\n", k3sm_test::failures());
         return 1;
