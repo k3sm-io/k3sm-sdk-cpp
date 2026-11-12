@@ -186,7 +186,8 @@ auto seq = w->publish(snap);           // the new, even seq, or an error
   sized to `page_size`) if it is missing, and takes over an existing one without
   truncating or replacing it. A reader's open mapping survives a writer restart.
   The writer's generation is the page's previous generation plus one, or 1 on a
-  new page.
+  new page. It also restarts at 1 when the stored generation is negative or has
+  no successor (the largest signed 64-bit value).
 - The lock file must not be in the page's directory, since a pod can open that
   directory. There is one writer per page.
 - `publish` refuses a snapshot the layout cannot carry before it stores
