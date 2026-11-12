@@ -213,7 +213,7 @@ auto seq = w->publish(snap);     // the new, even seq, or an error
   policy change, and restarts at 1 from the largest signed 64-bit value.
 - The writer-side error kinds are `writer_busy` (another writer holds the lock),
   `invalid_argument` (from `open`: a null path, or a lock file in the page's
-  directory; from `encode_page`: a buffer shorter than `page_size`),
+  directory; from `encode_page`: a null buffer or one shorter than `page_size`),
   `invalid_snapshot`, `node_name_too_long` and `io`, which
   carries the `errno` of the failing call in `sys_errno()`.
 - A `page_writer` is move-only and not safe for concurrent use from several
