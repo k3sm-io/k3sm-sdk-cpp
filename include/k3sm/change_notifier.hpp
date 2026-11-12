@@ -276,6 +276,18 @@ private:
         }
     }
 
+    // address_wait_ok reports whether an address wait that returned rc with
+    // errno err ended normally: a wake, the timeout or a signal. Anything
+    // else means the primitive cannot be used at all. A futex also returns
+    // EAGAIN when the word already differs from the expected value.
+    static constexpr bool address_wait_ok(int rc, int err) noexcept {
+#if defined(__linux__)
+        return rc == 0 || err == ETIMEDOUT || err == EAGAIN || err == EINTR;
+#else
+        return rc >= 0 || err == ETIMEDOUT || err == EINTR;
+#endif
+    }
+
     // block_address waits on the word. It returns false only when the
     // primitive cannot be used at all.
     bool block_address(std::chrono::nanoseconds left) noexcept {
@@ -284,7 +296,7 @@ private:
             const int rc = os_sync_wait_on_address_with_timeout(
                 word_, last_, sizeof(std::uint64_t), OS_SYNC_WAIT_ON_ADDRESS_SHARED,
                 OS_CLOCK_MACH_ABSOLUTE_TIME, static_cast<std::uint64_t>(left.count()));
-            return rc >= 0 || errno == ETIMEDOUT || errno == EINTR;
+            return address_wait_ok(rc, errno);
         }
         return false;
 #elif defined(__linux__)
@@ -295,7 +307,7 @@ private:
         ts.tv_nsec = static_cast<long>(left.count() % 1000000000);
         const long rc = ::syscall(SYS_futex, reinterpret_cast<std::uint32_t*>(word_), FUTEX_WAIT,
                                   static_cast<std::uint32_t>(last_), &ts, nullptr, 0);
-        return rc == 0 || errno == ETIMEDOUT || errno == EAGAIN || errno == EINTR;
+        return address_wait_ok(static_cast<int>(rc), errno);
 #else
         (void)left;
         return false;
