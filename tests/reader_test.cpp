@@ -940,6 +940,42 @@ void test_minor_and_codes() {
     K3SM_CHECK(!r && r.error() == sdk::error::corrupt);
 }
 
+// Every structural code site reads the first code past its table as a
+// mismatch.
+void test_structural_codes_out_of_range() {
+    const std::string darwin = read_file(fixture("darwin.v1.page"));
+    namespace o = sdk::page_offset;
+    namespace d = sdk::detail;
+    namespace sf = o::signal_field;
+    struct site {
+        const char* name;
+        std::size_t offset;
+        std::uint64_t count;
+    };
+    const site sites[] = {
+        {"platform", o::platform, d::platform_codes},
+        {"level", o::level, d::level_codes},
+        {"signals[0].id", o::signal_slot(0) + sf::id, d::signal_codes},
+        {"signals[0].unit", o::signal_slot(0) + sf::unit, d::unit_codes},
+        {"signals[0].shared_with", o::signal_slot(0) + sf::shared_with, d::signal_codes},
+        {"admit_reason_signal", o::admit_reason_signal, d::signal_codes},
+        {"kill_mode.mode", o::kill_mode_mode, d::kill_mode_codes},
+        {"recommendation.basis", o::recommendation_basis, d::signal_codes},
+        {"counters[0].band", o::counter_slot(0) + o::counter_field::band, d::band_codes},
+    };
+    for (const site& s : sites) {
+        std::string page = darwin;
+        put_u64(page, s.offset, s.count + 1);
+        const auto r = read_bytes(page);
+        const bool mismatch = !r && r.error() == sdk::error::abi_mismatch;
+        if (!mismatch) {
+            std::fprintf(stderr, "structural code site %s: code %llu is not a mismatch\n", s.name,
+                         static_cast<unsigned long long>(s.count + 1));
+        }
+        K3SM_CHECK(mismatch);
+    }
+}
+
 // Stale when now - observedAt exceeds staleFactor writer periods.
 void test_staleness() {
     const std::string path = fixture("darwin.v1.page");
@@ -1217,6 +1253,7 @@ int main() {
     reader_test::test_open_rejects_fifo_and_caps_oversize_file();
     reader_test::test_minor0_page();
     reader_test::test_minor_and_codes();
+    reader_test::test_structural_codes_out_of_range();
     reader_test::test_staleness();
     reader_test::test_helpers();
     reader_test::test_bytes_until_clamps_negative_inputs();
