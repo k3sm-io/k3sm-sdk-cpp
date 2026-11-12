@@ -13,8 +13,10 @@
 # It also checks statically that no script under hack/ sets the waiver and
 # that hack/ci.sh and hack/linux-test.sh each call require_sanitizers. The
 # setter scan is itself tested on fixture trees: every way of assigning the
-# waiver must be found, and a comment-only line, a file that is not a script
-# and the helper's own echo lines must not be.
+# waiver must be found, and a comment-only line, a file that is not a script,
+# a comparison or default-value read of the waiver and the helper's own echo
+# lines must not be. The scan is a lint against an accidental setter, not a
+# defence against a script built to hide one.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=hack/lib/sanitizers.sh
@@ -78,15 +80,20 @@ sanitizers_linked "$tmp/linked.txt" || { echo "FAIL: sanitizers_linked missed a 
 
 # waiver_setters <root>: print <path>:<line>: <text> for every line of a script
 # under <root>/hack that assigns K3SM_SDK_ALLOW_NO_SANITIZERS. A script is a
-# *.sh file or any file starting with #!. The name followed by = counts
-# anywhere on a line, so a prefix assignment after env, another assignment,
-# then, do, a bracket or a #, and an export, declare, local or readonly
-# operand are all found. Left out: comment-only lines, this file, and in
-# hack/lib/sanitizers.sh a line that is one echo of a plain double-quoted
-# string (the two lines that print the waiver's name).
+# *.sh file or any file starting with #!, and a symlink to a regular file
+# counts as that file. The name followed by = counts anywhere on a line, so a
+# prefix assignment after env, another assignment, then, do, a bracket or a
+# #, and an export, declare, local or readonly operand are all found. So are
+# ${NAME:=...}, and printf -v NAME or read with NAME among its operands where
+# printf or read starts a command. A comparison and a ${NAME:-...} read are
+# not assignments and are not found.
+# Left out: comment-only lines, this file, and in hack/lib/sanitizers.sh a
+# line that is one echo of a plain double-quoted string (the two lines that
+# print the waiver's name).
 waiver_setters() {
 	local root="$1" f rel helper
 	while IFS= read -r -d '' f; do
+		[ -f "$f" ] || continue
 		rel="${f#"$root"/}"
 		[ "$rel" != hack/verify-sanitizers-selftest.sh ] || continue
 		case "$f" in
@@ -98,10 +105,14 @@ waiver_setters() {
 		# shellcheck disable=SC2016 # awk program, not shell
 		awk -v rel="$rel" -v helper="$helper" '
 			/^[[:space:]]*#/ { next }
-			!/(^|[^A-Za-z0-9_])K3SM_SDK_ALLOW_NO_SANITIZERS=/ { next }
 			helper == 1 && /^[[:space:]]*echo "[^"`$;&|]*"[[:space:]]*$/ { next }
-			{ print rel ":" NR ": " $0 }' "$f"
-	done < <(find "$root/hack" -type f -print0 | sort -z)
+			/(^|[^A-Za-z0-9_])K3SM_SDK_ALLOW_NO_SANITIZERS=/ ||
+			/[$][{]K3SM_SDK_ALLOW_NO_SANITIZERS:=/ ||
+			/(^|[;&|({!])[[:space:]]*((then|do|else|while|until|if)[[:space:]]+)?printf[[:space:]]([^;&|]*[[:space:]])?-v[[:space:]]*["\047]?K3SM_SDK_ALLOW_NO_SANITIZERS([^A-Za-z0-9_]|$)/ ||
+			/(^|[;&|({!])[[:space:]]*((then|do|else|while|until|if)[[:space:]]+)?read([[:space:]]+[^[:space:];&|]+)*[[:space:]]+["\047]?K3SM_SDK_ALLOW_NO_SANITIZERS([^A-Za-z0-9_]|$)/ {
+				print rel ":" NR ": " $0
+			}' "$f"
+	done < <(find "$root/hack" \( -type f -o -type l \) -print0 | sort -z)
 }
 
 # Each fixture tree holds one script under hack/; form <name> <file> <line>...
@@ -116,6 +127,7 @@ form() {
 # Forms that set the waiver: each must be found.
 # shellcheck disable=SC2016 # the fixture line is written as is
 bracket='[ -z "$(K3SM_SDK_ALLOW_NO_SANITIZERS=1 hack/ci.sh)" ]'
+# shellcheck disable=SC2016 # the fixture lines are written as is
 found=(
 	"$(form env x.sh 'env K3SM_SDK_ALLOW_NO_SANITIZERS=1 hack/ci.sh')"
 	"$(form second-prefix x.sh 'CC=clang K3SM_SDK_ALLOW_NO_SANITIZERS=1 hack/ci.sh')"
@@ -130,17 +142,35 @@ found=(
 	"$(form hash-before x.sh 'echo "#"; K3SM_SDK_ALLOW_NO_SANITIZERS=1 hack/ci.sh')"
 	"$(form no-suffix run-gate 'K3SM_SDK_ALLOW_NO_SANITIZERS=1 hack/ci.sh')"
 	"$(form helper-chained lib/sanitizers.sh 'echo "x"; K3SM_SDK_ALLOW_NO_SANITIZERS=1 hack/ci.sh')"
+	"$(form default-assign x.sh ': "${K3SM_SDK_ALLOW_NO_SANITIZERS:=1}"')"
+	"$(form default-assign-bare x.sh 'echo ${K3SM_SDK_ALLOW_NO_SANITIZERS:=1} >/dev/null')"
+	"$(form printf-v x.sh 'printf -v K3SM_SDK_ALLOW_NO_SANITIZERS %s 1')"
+	"$(form read x.sh 'read K3SM_SDK_ALLOW_NO_SANITIZERS <<< 1')"
+	"$(form read-r x.sh 'read -r K3SM_SDK_ALLOW_NO_SANITIZERS <<< 1')"
 )
+# A symlink under hack/ to a script elsewhere is scanned as that script.
+link_root="$tmp/forms/symlink"
+mkdir -p "$link_root/hack" "$link_root/elsewhere"
+printf '%s\n' '#!/usr/bin/env bash' 'K3SM_SDK_ALLOW_NO_SANITIZERS=1 hack/ci.sh' > "$link_root/elsewhere/run.sh"
+ln -s ../elsewhere/run.sh "$link_root/hack/run-gate"
+found+=("$link_root")
 for root in "${found[@]}"; do
 	[ -n "$(waiver_setters "$root")" ] \
 		|| { echo "FAIL: the setter scan missed the ${root##*/} form: $(grep -rhv '^#' "$root/hack")"; exit 1; }
 done
 
 # Lines that do not set it: none may be found.
+# shellcheck disable=SC2016 # the fixture lines are written as is
 quiet="$(form quiet ci.sh \
 	'# K3SM_SDK_ALLOW_NO_SANITIZERS=1 waives the check' \
 	'	# K3SM_SDK_ALLOW_NO_SANITIZERS=1, indented' \
-	'FOO_K3SM_SDK_ALLOW_NO_SANITIZERS=1 hack/ci.sh')"
+	'FOO_K3SM_SDK_ALLOW_NO_SANITIZERS=1 hack/ci.sh' \
+	'[ "$K3SM_SDK_ALLOW_NO_SANITIZERS" = 1 ] || true' \
+	'[ "${K3SM_SDK_ALLOW_NO_SANITIZERS:-}" = 1 ] || true' \
+	'w="${K3SM_SDK_ALLOW_NO_SANITIZERS:-0}"' \
+	'printf "%s\n" "$K3SM_SDK_ALLOW_NO_SANITIZERS"' \
+	'echo "read the K3SM_SDK_ALLOW_NO_SANITIZERS docs"; true' \
+	'echo "printf -v K3SM_SDK_ALLOW_NO_SANITIZERS would set it"')"
 form quiet verify-sanitizers-selftest.sh 'K3SM_SDK_ALLOW_NO_SANITIZERS=1 hack/ci.sh' > /dev/null
 mkdir -p "$quiet/hack/lib"; cp hack/lib/sanitizers.sh "$quiet/hack/lib/sanitizers.sh"
 printf '%s\n' 'K3SM_SDK_ALLOW_NO_SANITIZERS=1 hack/ci.sh' > "$quiet/hack/notes.txt"
