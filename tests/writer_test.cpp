@@ -800,8 +800,9 @@ static_assert(sdk::detail::next_generation(gen_min) == 1);
 // One bump on a fresh page raises the generation by exactly one.
 void test_bump_generation_by_one() {
     const std::string page = page_path("bump1.page");
-    const unlinker guard{page};
-    auto w = sdk::page_writer::open(page.c_str(), lock_path("bump1.lock").c_str());
+    const std::string lock = lock_path("bump1.lock");
+    const unlinker guard{page, lock};
+    auto w = sdk::page_writer::open(page.c_str(), lock.c_str());
     K3SM_CHECK(w.has_value());
     if (!w) {
         return;
