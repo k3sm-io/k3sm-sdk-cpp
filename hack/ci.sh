@@ -15,6 +15,8 @@
 #   3. build a consumer that uses FetchContent with no options from a git
 #      clone of this checkout and links k3sm::sdk
 #   4. the version check: tag, CMake version and generated header agree
+#      (hack/verify-version.sh, after its self-test,
+#      hack/verify-version-selftest.sh)
 #   5. shellcheck over every hack/**/*.sh
 #   6. every C and C++ file carries the Apache-2.0 header
 #   7. every file under .github/workflows/ is dormant (fully commented out)
@@ -325,6 +327,7 @@ cmake --build "$tmp/fetch/build" > /dev/null
 echo "    ok"
 
 echo "==> version (tag, CMake, generated header)"
+bash hack/verify-version-selftest.sh
 bash hack/verify-version.sh "$tmp/build-unity-OFF"
 
 echo "==> shellcheck (hack/**/*.sh)"
