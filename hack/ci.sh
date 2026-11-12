@@ -54,10 +54,12 @@
 #               fails, naming how to get one, when none links
 #               -fsanitize=fuzzer.
 #   --compile-extras
-#               configure with K3SM_SDK_STRESS=ON and build (never run) the
-#               torn-read stress test and the benchmark, with warnings as
-#               errors and the sanitizers the toolchain supports, so they
-#               keep compiling between --stress runs
+#               build (never run) the torn-read stress test and the
+#               benchmark in the configurations --stress runs them in, with
+#               warnings as errors, so they keep compiling between --stress
+#               runs: the stress test RelWithDebInfo under ThreadSanitizer
+#               (without it, and saying so, where it does not link), the
+#               benchmark Release with no sanitizers
 #   --cshim     a placeholder until its part of the SDK lands
 #   --linux-vm  a placeholder: this gate does not run the Linux build; run
 #               hack/linux-test.sh on a Linux host instead
@@ -182,15 +184,46 @@ if [ "$stage" = --notifier ]; then
 fi
 
 if [ "$stage" = --compile-extras ]; then
-	echo "==> stress test and benchmark, built only (K3SM_SDK_STRESS=ON)"
-	b="$tmp/build-extras"
-	cmake -S . -B "$b" -DCMAKE_BUILD_TYPE=Debug -DK3SM_SDK_STRESS=ON > "$tmp/configure.log" \
-		|| { cat "$tmp/configure.log"; echo "FAIL: cmake configure (K3SM_SDK_STRESS=ON)"; exit 1; }
-	for t in k3sm_sdk_threads_stress_test k3sm_sdk_page_bench; do
-		cmake --build "$b" --parallel "$jobs" --target "$t" > "$tmp/build-$t.log" 2>&1 \
-			|| { cat "$tmp/build-$t.log"; echo "FAIL: $t did not build"; exit 1; }
-		echo "    built $t"
-	done
+	echo "==> stress test (RelWithDebInfo, ThreadSanitizer) and benchmark (Release, no sanitizers), built only"
+	# extras_build <dir> <target>: build one target in an already configured dir.
+	extras_build() {
+		cmake --build "$1" --parallel "$jobs" --target "$2" > "$tmp/build-$2.log" 2>&1 \
+			|| { cat "$tmp/build-$2.log"; echo "FAIL: $2 did not build"; exit 1; }
+	}
+	# The torn-read stress test, in the configuration --stress runs it in. The
+	# CMake probe behind K3SM_SDK_SANITIZER=thread is the one --stress relies
+	# on; when it reports that ThreadSanitizer cannot link here, the target is
+	# still compiled, without it, and the stage says so.
+	b="$tmp/build-extras-tsan"
+	t=k3sm_sdk_threads_stress_test
+	cfg="RelWithDebInfo, ThreadSanitizer"
+	if ! cmake -S . -B "$b" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DK3SM_SDK_SANITIZER=thread -DK3SM_SDK_STRESS=ON \
+		> "$tmp/configure.log" 2>&1; then
+		if ! grep -q 'Performing Test K3SM_SDK_HAVE_TSAN - Failed' "$tmp/configure.log"; then
+			cat "$tmp/configure.log"; echo "FAIL: cmake configure (stress test, ThreadSanitizer)"; exit 1
+		fi
+		echo "    ThreadSanitizer does not link here: building $t without it (RelWithDebInfo, no sanitizers)"
+		b="$tmp/build-extras-nosan"
+		cfg="RelWithDebInfo, no sanitizers: ThreadSanitizer unavailable"
+		cmake -S . -B "$b" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DK3SM_SDK_SANITIZER=none -DK3SM_SDK_STRESS=ON \
+			> "$tmp/configure.log" 2>&1 \
+			|| { cat "$tmp/configure.log"; echo "FAIL: cmake configure (stress test, no sanitizers)"; exit 1; }
+	fi
+	# The guard must be able to fail: a target that does not exist has to be
+	# a build error, or a green here would prove nothing.
+	if cmake --build "$b" --target k3sm_sdk_no_such_target > /dev/null 2>&1; then
+		echo "FAIL: build guard is vacuous"; exit 1
+	fi
+	extras_build "$b" "$t"
+	echo "    built $t ($cfg)"
+	# The benchmark, in the configuration --stress runs it in.
+	b="$tmp/build-extras-bench"
+	t=k3sm_sdk_page_bench
+	cmake -S . -B "$b" -DCMAKE_BUILD_TYPE=Release -DK3SM_SDK_SANITIZER=none -DK3SM_SDK_STRESS=ON \
+		> "$tmp/configure.log" 2>&1 \
+		|| { cat "$tmp/configure.log"; echo "FAIL: cmake configure (benchmark)"; exit 1; }
+	extras_build "$b" "$t"
+	echo "    built $t (Release, no sanitizers)"
 	echo "k3sm-sdk-cpp ci --compile-extras: green"
 	ci_done=1
 	exit 0
