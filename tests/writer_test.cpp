@@ -24,6 +24,7 @@ limitations under the License.
 #include <k3sm/budget.hpp>
 #include <k3sm/page_writer.hpp>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -39,6 +40,7 @@ limitations under the License.
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "test_util.hpp"
@@ -478,6 +480,97 @@ void test_live_page() {
     ::unlink(page.c_str());
 }
 
+// A writer process that died without closing left its lock file behind: the
+// lock went with the process, so the next writer opens the page.
+void test_lock_left_by_dead_writer() {
+    const std::string page = page_path("dead.page");
+    const std::string lock = lock_path("dead.lock");
+    const unlinker guard{page, lock};
+    int ready[2];
+    int release[2];
+    if (::pipe(ready) != 0) {
+        k3sm_test::fail(__FILE__, __LINE__, "pipe");
+        return;
+    }
+    if (::pipe(release) != 0) {
+        k3sm_test::fail(__FILE__, __LINE__, "pipe");
+        ::close(ready[0]);
+        ::close(ready[1]);
+        return;
+    }
+    const pid_t child = ::fork();
+    if (child < 0) {
+        k3sm_test::fail(__FILE__, __LINE__, "fork");
+        for (const int fd : {ready[0], ready[1], release[0], release[1]}) {
+            ::close(fd);
+        }
+        return;
+    }
+    if (child == 0) {
+        ::close(ready[0]);
+        ::close(release[1]);
+        const sdk::snapshot darwin = golden("darwin.v1.page");
+        auto w = sdk::page_writer::open(page.c_str(), lock.c_str());
+        const bool held = w.has_value() && w->publish(darwin).has_value();
+        const char ok = held ? '1' : '0';
+        (void)!::write(ready[1], &ok, 1);
+        char c = 0;
+        (void)!::read(release[0], &c, 1);
+        ::_exit(held ? 0 : 1);  // no destructor runs: the writer is never closed
+    }
+    ::close(ready[1]);
+    ::close(release[0]);
+    char ok = 0;
+    K3SM_CHECK(::read(ready[0], &ok, 1) == 1 && ok == '1');
+    ::close(ready[0]);
+    // While the child lives, it holds the lock.
+    auto busy = sdk::page_writer::open(page.c_str(), lock.c_str());
+    K3SM_CHECK(!busy && busy.error() == sdk::error::writer_busy);
+    ::close(release[1]);
+    int status = 0;
+    K3SM_CHECK(::waitpid(child, &status, 0) == child);
+    K3SM_CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    struct stat st {};
+    K3SM_CHECK(::stat(lock.c_str(), &st) == 0);  // the lock file is still there
+    auto w = sdk::page_writer::open(page.c_str(), lock.c_str());
+    K3SM_CHECK(w.has_value());
+    if (w) {
+        K3SM_CHECK_EQ(w->generation(), 2);  // the dead writer's 1, plus the restart
+        K3SM_CHECK_EQ(w->seq(), 2u);          // one publication by the dead writer
+    }
+}
+
+// An open that fails on the doorbell after it took the lock and mapped the
+// page releases both: the next open of the same page succeeds.
+void test_open_fails_after_lock() {
+    const std::string page = page_path("bellfail.page");
+    const std::string lock = lock_path("bellfail.lock");
+    const std::string bad_bell = page_path("missing-dir/budget.bell");
+    const std::string bell = page_path("bellfail.bell");
+    const unlinker guard{page, lock, bell};
+    {
+        auto failed = sdk::page_writer::open(page.c_str(), lock.c_str(), bad_bell.c_str());
+        K3SM_CHECK(!failed && failed.error() == sdk::error::io);
+        if (!failed) {
+            K3SM_CHECK_EQ(failed.error().sys_errno(), ENOENT);
+        }
+    }
+    // The page file the failed open created is there, preallocated.
+    struct stat st {};
+    K3SM_CHECK(::stat(page.c_str(), &st) == 0);
+    K3SM_CHECK_EQ(static_cast<std::size_t>(st.st_size), sdk::page_size);
+
+    auto w = sdk::page_writer::open(page.c_str(), lock.c_str(), bell.c_str());
+    K3SM_CHECK(w.has_value());
+    if (!w) {
+        return;
+    }
+    K3SM_CHECK_EQ(w->generation(), 1);  // the failed open never took the page over
+    K3SM_CHECK(w->publish(golden("darwin.v1.page")).has_value());
+    K3SM_CHECK(::stat(bell.c_str(), &st) == 0 && st.st_size >= 1);
+}
+
 // A writer that died mid-write left seq odd: the next writer moves past it.
 void test_resume_odd_seq() {
     const std::string page = page_path("odd.page");
@@ -795,6 +888,8 @@ int main() {
     writer_test::test_encode_refusals();
     writer_test::test_notify_vectors();
     writer_test::test_live_page();
+    writer_test::test_lock_left_by_dead_writer();
+    writer_test::test_open_fails_after_lock();
     writer_test::test_resume_odd_seq();
     writer_test::test_resume_header_store_order();
     writer_test::test_resume_rollback_page();
