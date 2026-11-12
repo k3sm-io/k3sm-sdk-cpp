@@ -83,7 +83,8 @@ std::int64_t size_batch(std::int64_t cap, std::int64_t slot_bytes) {
     if (!s) {
         return cap;  // abi_mismatch, truncated, corrupt, torn or stale
     }
-    // batch_slots is 0 while the node does not admit, so this only lowers cap.
+    // batch_slots is 0 while the node does not admit, has no recommendation,
+    // or slot_bytes is not positive, so this only lowers cap.
     return std::min(cap, sdk::batch_slots(*s, slot_bytes));
 }
 ```
@@ -173,8 +174,9 @@ std::int64_t size_batch(std::int64_t cap, std::int64_t slot_bytes) {
   `bytes_until(s, signal, rung)` is how many bytes a byte-valued signal can
   move toward a rung (0 at or past it, `std::nullopt` when the page cannot
   say). `batch_slots(s, slot_bytes)` is how many more slots of that size fit
-  in the node's safe headroom (0 while it does not admit). Use it only to
-  lower your own limit.
+  in the node's safe headroom (0 while it does not admit, when the page has no
+  recommendation, or when the slot size is not positive). Use it only to lower
+  your own limit.
 
 The page layout and its golden fixtures come from the k3sm `apis` repository;
 the copies under `tests/fixtures/page` are checked against their digests by
@@ -224,7 +226,7 @@ ctest --test-dir build --output-on-failure
 hack/ci.sh            # the full gate
 hack/ci.sh --reader   # the page reader's tests alone
 hack/ci.sh --notifier # the change notifier's tests alone
-hack/ci.sh --compile-extras # build (not run) the stress test (RelWithDebInfo, TSan) and the bench (Release)
+hack/ci.sh --compile-extras # build (not run) the stress test (RelWithDebInfo, TSan where it links) and the bench (Release)
 hack/ci.sh --stress   # ThreadSanitizer stress, fuzz smoke, ASan/UBSan, bench
 ```
 
@@ -234,11 +236,13 @@ standard library. `hack/ci.sh --stress` also needs a clang with libFuzzer, which
 Apple clang does not ship: on macOS, `brew install llvm` provides one, and
 `K3SM_SDK_FUZZ_CXX` can name any other.
 
-The tests build and run under AddressSanitizer and UndefinedBehaviorSanitizer.
-When the compiler cannot link `-fsanitize=address,undefined`, `hack/ci.sh` and
-`hack/linux-test.sh` fail and say so. Setting `K3SM_SDK_ALLOW_NO_SANITIZERS=1`
-runs the tests without the sanitizers instead, and the run prints a `WAIVED`
-line; `hack/ci.sh --stress` takes no such waiver.
+`hack/ci.sh` and `hack/linux-test.sh` build and run the tests under
+AddressSanitizer and UndefinedBehaviorSanitizer. When the compiler cannot link
+`-fsanitize=address,undefined`, they fail and say so. Setting
+`K3SM_SDK_ALLOW_NO_SANITIZERS=1` runs the tests without the sanitizers instead,
+and the run prints a `WAIVED` line; `hack/ci.sh --stress` takes no such waiver.
+The plain `cmake` and `ctest` commands above add the sanitizers only when the
+compiler links them, and say nothing when it does not.
 
 `hack/ci.sh` is the macOS gate and does not build the Linux tests. On a Linux
 host, run `hack/linux-test.sh`: it builds and runs the tests with the compiler
