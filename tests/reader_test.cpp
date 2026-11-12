@@ -1316,6 +1316,93 @@ void test_lone_linux_word_makes_linux_block() {
     }
 }
 
+// test_read_fresh_on_wall_clock: read() checks staleness against the wall
+// clock. The darwin golden restamped with the current second reads fresh
+// through read(); the golden's one-second period gives a bound of
+// stale_factor seconds, which is the margin the read has. The same page
+// stamped 1000 seconds earlier reads stale.
+void test_read_fresh_on_wall_clock() {
+    namespace o = sdk::page_offset;
+    const std::string golden = read_file(fixture("darwin.v1.page"));
+    K3SM_CHECK_EQ(static_cast<std::int64_t>(get_u64(golden, o::writer_period_seconds)), 1);
+    for (const std::int64_t back : {std::int64_t{0}, std::int64_t{1000}}) {
+        std::string page = golden;
+        const std::int64_t now = sdk::detail::now_unix_seconds();
+        put_u64(page, o::observed_at, static_cast<std::uint64_t>(now - back));
+        const std::string path = write_temp(page);
+        auto mapped = sdk::budget_page::open(path.c_str());
+        ::unlink(path.c_str());
+        K3SM_CHECK(mapped.has_value());
+        if (!mapped) {
+            continue;
+        }
+        const auto r = mapped->read();
+        if (back == 0) {
+            K3SM_CHECK(r.has_value());
+            if (r) {
+                K3SM_CHECK_EQ(r->observed_at, now);
+            }
+        } else {
+            K3SM_CHECK(!r && r.error() == sdk::error::stale);
+        }
+    }
+}
+
+// test_one_field_present: the C++ decode does not collapse a level that
+// holds one present field. A darwin page's compressor is a plain struct of
+// three optionals, so with only one compressor word set the darwin block
+// holds that value and the other two read absent; a PSI line is likewise a
+// struct of optionals, so with only cpu full total set the Linux block is
+// present (any Linux word makes it), that line holds the total, and every
+// other PSI value and every memory.events total reads absent.
+void test_one_field_present() {
+    namespace o = sdk::page_offset;
+    const std::string golden = read_file(fixture("darwin.v1.page"));
+    constexpr std::size_t compressor[] = {o::darwin_compressor_bytes_used, o::darwin_compressor_bytes_stored,
+                                          o::darwin_compressor_segment_limit_bytes};
+    std::string bare = golden;
+    for (const std::size_t at : compressor) {
+        put_u64(bare, at, static_cast<std::uint64_t>(sdk::page_absent));
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+        std::string page = bare;
+        const std::int64_t value = 1000 + static_cast<std::int64_t>(i);
+        put_u64(page, compressor[i], static_cast<std::uint64_t>(value));
+        const auto r = read_bytes(page);
+        K3SM_CHECK(r.has_value());
+        if (!r || !r->darwin) {
+            K3SM_CHECK(r && r->darwin.has_value());
+            continue;
+        }
+        const sdk::darwin_compressor& c = r->darwin->compressor;
+        K3SM_CHECK_EQ(c.bytes_used, i == 0 ? std::optional(value) : none);
+        K3SM_CHECK_EQ(c.bytes_stored, i == 1 ? std::optional(value) : none);
+        K3SM_CHECK_EQ(c.segment_limit_bytes, i == 2 ? std::optional(value) : none);
+    }
+
+    std::string psi = golden;
+    put_u64(psi, o::linux_psi_field(0, 1, o::linux_psi_total_us), 777);
+    const auto r = read_bytes(psi);
+    K3SM_CHECK(r.has_value());
+    if (!r) {
+        return;
+    }
+    K3SM_CHECK(r->linux_.has_value());
+    if (!r->linux_) {
+        return;
+    }
+    const sdk::linux_signals& l = *r->linux_;
+    K3SM_CHECK_EQ(l.psi.cpu.full.total_us, 777);
+    K3SM_CHECK_EQ(l.psi.cpu.full.avg10_permille, none);
+    K3SM_CHECK_EQ(l.psi.cpu.full.avg60_permille, none);
+    for (const sdk::psi_line* line : {&l.psi.cpu.some, &l.psi.memory.some, &l.psi.memory.full, &l.psi.io.some,
+                                      &l.psi.io.full}) {
+        K3SM_CHECK(!line->avg10_permille && !line->avg60_permille && !line->total_us);
+    }
+    K3SM_CHECK(!l.memory_events.high && !l.memory_events.max && !l.memory_events.oom &&
+               !l.memory_events.oom_kill);
+}
+
 // test_find_signal: on the darwin golden, find_signal returns nullptr for
 // the unset id and for an id the page does not hold, and the slot of an id
 // it holds. The golden holds all seven ids, so the absent case clears the
@@ -1605,6 +1692,8 @@ int main() {
     reader_test::test_open_short_file_is_truncated();
     reader_test::test_page_shorter_than_header_is_truncated();
     reader_test::test_lone_linux_word_makes_linux_block();
+    reader_test::test_read_fresh_on_wall_clock();
+    reader_test::test_one_field_present();
     reader_test::test_find_signal();
     reader_test::test_corrupt_beats_stale();
     reader_test::test_open_follows_symlink();
