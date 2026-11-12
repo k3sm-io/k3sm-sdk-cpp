@@ -1002,6 +1002,108 @@ void test_move_assign_and_failed_doorbells_leak_no_descriptor() {
     K3SM_CHECK_EQ(k3sm_test::open_fd_count(), before_fail);
 }
 
+// test_kept_doorbell_with_the_word_as_primary: given a doorbell that opens
+// but no preference for it (the default, or any value but doorbell), the
+// notifier keeps the word as its wake source, a bump with a wake is reported,
+// and building and destroying such a notifier keeps no descriptor.
+void test_kept_doorbell_with_the_word_as_primary() {
+#if defined(__APPLE__) || defined(__linux__)
+    const std::string path = tmp_path("keptbell.page");
+    const std::string bell = tmp_path("keptbell.bell");
+    const remove_on_exit cleanup{path, bell};
+    K3SM_CHECK(write_page(path));
+    const int bfd = ::open(bell.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    K3SM_CHECK(bfd >= 0);
+    if (bfd >= 0) {
+        ::close(bfd);
+    }
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        return;
+    }
+    rw_page rw(path);
+    K3SM_CHECK(rw.base != nullptr);
+    if (rw.base == nullptr) {
+        return;
+    }
+    sdk::change_notifier n1(*page, bell.c_str());
+    sdk::change_notifier n2(*page, bell.c_str(), sdk::wake_source::sleep);
+    K3SM_CHECK(n1.source() == sdk::wake_source::address);
+    K3SM_CHECK(n2.source() == sdk::wake_source::address);
+
+    std::thread bumper([&rw] {
+        std::this_thread::sleep_for(20ms);
+        rw.bump();
+        rw.wake();
+    });
+    const std::uint64_t before1 = n1.epoch();
+    const std::uint64_t before2 = n2.epoch();
+    K3SM_CHECK(guarded_wait(n1, rw, 2s, __LINE__));
+    bumper.join();
+    K3SM_CHECK(n2.wait(2s));
+    K3SM_CHECK_EQ(n1.epoch(), before1 + 1);
+    K3SM_CHECK_EQ(n2.epoch(), before2 + 1);
+    K3SM_CHECK(n1.source() == sdk::wake_source::address);
+    K3SM_CHECK(n2.source() == sdk::wake_source::address);
+
+    const auto round = [&]() {
+        const sdk::change_notifier a(*page, bell.c_str());
+        const sdk::change_notifier b(*page, bell.c_str(), sdk::wake_source::sleep);
+        K3SM_CHECK(a.source() == sdk::wake_source::address);
+        K3SM_CHECK(b.source() == sdk::wake_source::address);
+    };
+    round();
+    const int before = k3sm_test::open_fd_count();
+    for (int i = 0; i < 300; ++i) {
+        round();
+    }
+    K3SM_CHECK_EQ(k3sm_test::open_fd_count(), before);
+#endif
+}
+
+// test_short_page_given_a_doorbell: a page too short to hold notifyEpoch,
+// given a doorbell it would prefer, has nothing to wait on and never opens
+// the doorbell, so it holds no descriptor while alive and leaks none.
+void test_short_page_given_a_doorbell() {
+    const std::string path = tmp_path("shortbell.page");
+    const std::string bell = tmp_path("shortbell.bell");
+    const remove_on_exit cleanup{path, bell};
+    const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    K3SM_CHECK(fd >= 0);
+    if (fd < 0) {
+        return;
+    }
+    const char bytes[64] = {};
+    K3SM_CHECK(::write(fd, bytes, sizeof bytes) == static_cast<ssize_t>(sizeof bytes));
+    ::close(fd);
+    const int bfd = ::open(bell.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    K3SM_CHECK(bfd >= 0);
+    if (bfd >= 0) {
+        ::close(bfd);
+    }
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        return;
+    }
+
+    const int before = k3sm_test::open_fd_count();
+    {
+        sdk::change_notifier n(*page, bell.c_str(), sdk::wake_source::doorbell);
+        K3SM_CHECK(n.source() == sdk::wake_source::none);
+        // The doorbell was never opened: the live notifier holds nothing.
+        K3SM_CHECK_EQ(k3sm_test::open_fd_count(), before);
+        K3SM_CHECK(!n.wait(10ms));
+        K3SM_CHECK(n.source() == sdk::wake_source::none);
+    }
+    for (int i = 0; i < 300; ++i) {
+        const sdk::change_notifier m(*page, bell.c_str(), sdk::wake_source::doorbell);
+        K3SM_CHECK(m.source() == sdk::wake_source::none);
+    }
+    K3SM_CHECK_EQ(k3sm_test::open_fd_count(), before);
+}
+
 }  // namespace notifier_test
 
 int main(int argc, char** argv) {
@@ -1025,6 +1127,8 @@ int main(int argc, char** argv) {
     notifier_test::test_wait_caps_are_pinned();
     notifier_test::test_wait_slice_is_clamped();
     notifier_test::test_move_assign_and_failed_doorbells_leak_no_descriptor();
+    notifier_test::test_kept_doorbell_with_the_word_as_primary();
+    notifier_test::test_short_page_given_a_doorbell();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "notifier_test: %d failure(s)\n", k3sm_test::failures());
         return 1;
