@@ -962,8 +962,18 @@ void test_structural_codes_out_of_range() {
         {"kill_mode.mode", o::kill_mode_mode, d::kill_mode_codes},
         {"recommendation.basis", o::recommendation_basis, d::signal_codes},
         {"counters[0].band", o::counter_slot(0) + o::counter_field::band, d::band_codes},
+        {"signals[1].id", o::signal_slot(1) + sf::id, d::signal_codes},
+        {"counters[1].band", o::counter_slot(1) + o::counter_field::band, d::band_codes},
     };
     for (const site& s : sites) {
+        std::string last = darwin;
+        put_u64(last, s.offset, s.count);
+        const auto ok = read_bytes(last);
+        if (!ok) {
+            std::fprintf(stderr, "structural code site %s: last valid code %llu is rejected\n", s.name,
+                         static_cast<unsigned long long>(s.count));
+        }
+        K3SM_CHECK(ok.has_value());
         std::string page = darwin;
         put_u64(page, s.offset, s.count + 1);
         const auto r = read_bytes(page);
