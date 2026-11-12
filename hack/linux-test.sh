@@ -7,10 +7,14 @@
 #
 # It builds the tests twice, as hack/ci.sh's first stage does on macOS: once
 # as separate sources and once as a unity build (CMAKE_UNITY_BUILD), under
-# AddressSanitizer and UndefinedBehaviorSanitizer when the compiler supports
-# them, and runs every ctest test in both builds. The compiler is $CXX
-# (default c++). The build directories live under a temporary directory that
-# is removed on exit.
+# AddressSanitizer and UndefinedBehaviorSanitizer, and runs every ctest test in
+# both builds. The compiler is $CXX (default c++). The build directories live
+# under a temporary directory that is removed on exit.
+#
+# A compiler that cannot link -fsanitize=address,undefined fails the run
+# (hack/lib/sanitizers.sh; only Clang and GNU compilers are probed), unless
+# K3SM_SDK_ALLOW_NO_SANITIZERS=1 waives it: the tests then build and run
+# without sanitizers and each build prints a WAIVED line.
 #
 # On any other system it refuses with exit status 2 before doing anything,
 # so it never reports a Linux result it did not produce.
@@ -23,6 +27,8 @@ if [ "$uname_s" != Linux ]; then
 fi
 
 cd "$(dirname "$0")/.."
+# shellcheck source=hack/lib/sanitizers.sh
+. hack/lib/sanitizers.sh
 
 for tool in cmake ctest; do
 	command -v "$tool" >/dev/null || { echo "FAIL: $tool is not installed"; exit 1; }
@@ -41,10 +47,11 @@ for unity in OFF ON; do
 	cmake -S . -B "$b" -DCMAKE_CXX_COMPILER="$cxx_path" -DCMAKE_BUILD_TYPE=Debug \
 		-DCMAKE_UNITY_BUILD="$unity" > "$tmp/configure.log" \
 		|| { cat "$tmp/configure.log"; echo "FAIL: cmake configure (unity $unity)"; exit 1; }
-	if grep -q 'K3SM_SDK_HAVE_SANITIZERS:INTERNAL=1' "$b/CMakeCache.txt"; then
+	require_sanitizers "$b/CMakeCache.txt" || exit 1
+	if sanitizers_linked "$b/CMakeCache.txt"; then
 		san="with sanitizers"
 	else
-		san="without sanitizers (unsupported by this compiler)"
+		san="WITHOUT sanitizers (waived)"
 	fi
 	cmake --build "$b" --parallel "$jobs"
 	ctest --test-dir "$b" --output-on-failure --no-tests=error

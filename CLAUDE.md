@@ -13,8 +13,10 @@ code from the other k3sm repositories.
 
 ## Layout
 - **`include/k3sm/`**: the public headers. Everything public is in namespace `k3sm::sdk`.
-- **`tests/`**: ctest targets. They build with warnings as errors and, where the toolchain
-  supports it, AddressSanitizer and UndefinedBehaviorSanitizer.
+- **`tests/`**: ctest targets. They build with warnings as errors and under AddressSanitizer and
+  UndefinedBehaviorSanitizer. A toolchain that cannot link those fails `hack/ci.sh` and
+  `hack/linux-test.sh` (`hack/lib/sanitizers.sh`) unless `K3SM_SDK_ALLOW_NO_SANITIZERS=1` waives it
+  for that run, which prints `WAIVED`; `--stress` takes no waiver, and no script sets it.
 - **`cmake/`**: the package config template that `find_package(k3sm-sdk CONFIG)` reads.
 - **`hack/`**: the gate and its checks.
 
