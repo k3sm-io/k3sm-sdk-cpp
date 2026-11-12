@@ -681,6 +681,8 @@ void test_resume_header_store_order() {
         {"equal body", sdk::page_body_size, false},
         {"larger body", sdk::page_body_size + 8, true},
         {"high bits ignored", std::uint64_t{1} << 32 | sdk::page_body_size, false},
+        {"zero body", 0, false},
+        {"top bit of the low word", 0xFFFFFFFFull, true},
     };
     for (const shrink_case& c : shrink_cases) {
         const bool shrinks = sdk::detail::resume_shrinks(c.word);
