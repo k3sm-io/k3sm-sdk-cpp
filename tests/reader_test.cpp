@@ -29,6 +29,7 @@ limitations under the License.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -1065,6 +1066,109 @@ void test_open_short_file_is_truncated() {
     }
 }
 
+// remove_on_exit removes each named file, link or empty directory when the
+// test returns on any path, including an early return after a failed check.
+struct remove_on_exit {
+    std::vector<std::string> paths;
+    remove_on_exit(std::initializer_list<std::string> p) : paths(p) {}
+    remove_on_exit(const remove_on_exit&) = delete;
+    remove_on_exit& operator=(const remove_on_exit&) = delete;
+    ~remove_on_exit() {
+        for (const std::string& p : paths) {
+            ::unlink(p.c_str());
+            ::rmdir(p.c_str());
+        }
+    }
+};
+
+// make_temp_dir creates a fresh directory under the test directory.
+std::string make_temp_dir() {
+    std::string dir = std::string(K3SM_SDK_TEST_TMPDIR) + "/open-XXXXXX";
+    if (::mkdtemp(dir.data()) == nullptr) {
+        std::fprintf(stderr, "cannot create a directory under %s\n", K3SM_SDK_TEST_TMPDIR);
+        std::exit(2);
+    }
+    return dir;
+}
+
+// write_page copies the darwin golden page to path.
+bool write_page(const std::string& path) {
+    const std::string bytes = read_file(fixture("darwin.v1.page"));
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return false;
+    }
+    const bool ok = !bytes.empty() && ::write(fd, bytes.data(), bytes.size()) == static_cast<ssize_t>(bytes.size());
+    ::close(fd);
+    return ok;
+}
+
+// test_corrupt_beats_stale: a page with an out-of-domain field read with a
+// clock far past the staleness bound reports corrupt, because decode runs
+// before the staleness check.
+void test_corrupt_beats_stale() {
+    namespace o = sdk::page_offset;
+    std::string page = read_file(fixture("darwin.v1.page"));
+    put_u64(page, o::gpu_present, 2);
+    const auto r = read_bytes(page, observed + 100 * sdk::stale_factor);
+    K3SM_CHECK(!r && r.error() == sdk::error::corrupt);
+    // The same clock on the intact page is stale, so the clock is far enough.
+    const auto s = open_read(fixture("darwin.v1.page"), observed + 100 * sdk::stale_factor);
+    K3SM_CHECK(!s && s.error() == sdk::error::stale);
+}
+
+// test_open_follows_symlink: a symlink to the page opens and reads the same
+// snapshot, and a symlink to a directory fails like the directory itself.
+void test_open_follows_symlink() {
+    const std::string dir = make_temp_dir();
+    const std::string link = dir + "/page.link";
+    const std::string dirlink = dir + "/dir.link";
+    const remove_on_exit cleanup{link, dirlink, dir};
+    K3SM_CHECK_EQ(::symlink(fixture("darwin.v1.page").c_str(), link.c_str()), 0);
+    K3SM_CHECK_EQ(::symlink(dir.c_str(), dirlink.c_str()), 0);
+
+    const auto r = open_read(link);
+    K3SM_CHECK(r.has_value());
+    if (r) {
+        check_darwin_sample(*r);
+    }
+    const auto direct = open_read(fixture("darwin.v1.page"));
+    K3SM_CHECK(direct.has_value());
+    if (r && direct) {
+        K3SM_CHECK_EQ(r->observed_at, direct->observed_at);
+        K3SM_CHECK_EQ(r->seq, direct->seq);
+    }
+
+    const auto d = sdk::budget_page::open(dirlink.c_str());
+    K3SM_CHECK(!d && d.error() == sdk::error::not_found);
+    K3SM_CHECK(!d && d.error().sys_errno() == EISDIR);
+}
+
+// test_open_carries_eacces_and_enotdir: open reports the errno of the failed
+// system call, here an unreadable page and a path beneath a regular file.
+void test_open_carries_eacces_and_enotdir() {
+    const std::string dir = make_temp_dir();
+    const std::string locked = dir + "/locked.page";
+    const std::string plain = dir + "/plain.page";
+    const remove_on_exit cleanup{locked, plain, dir};
+    K3SM_CHECK(write_page(locked));
+    K3SM_CHECK(write_page(plain));
+
+    if (::geteuid() != 0) {
+        K3SM_CHECK_EQ(::chmod(locked.c_str(), 0), 0);
+        const auto p = sdk::budget_page::open(locked.c_str());
+        K3SM_CHECK(!p && p.error() == sdk::error::not_found);
+        K3SM_CHECK(!p && p.error().sys_errno() == EACCES);
+    } else {
+        std::fprintf(stderr, "skip: the EACCES half needs a non-root user\n");
+    }
+
+    const std::string below = plain + "/page";
+    const auto q = sdk::budget_page::open(below.c_str());
+    K3SM_CHECK(!q && q.error() == sdk::error::not_found);
+    K3SM_CHECK(!q && q.error().sys_errno() == ENOTDIR);
+}
+
 void test_result_and_move() {
     sdk::result<int> ok = 7;
     K3SM_CHECK(ok && *ok == 7);
@@ -1107,6 +1211,9 @@ int main() {
     reader_test::test_bytes_until_clamps_negative_inputs();
     reader_test::test_batch_slots_nonpositive_recommendation();
     reader_test::test_open_short_file_is_truncated();
+    reader_test::test_corrupt_beats_stale();
+    reader_test::test_open_follows_symlink();
+    reader_test::test_open_carries_eacces_and_enotdir();
     reader_test::test_result_and_move();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "reader_test: %d failure(s)\n", k3sm_test::failures());
