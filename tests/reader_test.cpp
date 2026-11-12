@@ -996,6 +996,66 @@ void test_staleness() {
                                       std::numeric_limits<std::int64_t>::min()));
 }
 
+// The stale rule's period and boundary edges, one row per case: the bound is
+// stale_factor periods, clamped to the int64 range instead of overflowing.
+void test_staleness_edges() {
+    constexpr std::int64_t max = std::numeric_limits<std::int64_t>::max();
+    constexpr std::int64_t min = std::numeric_limits<std::int64_t>::min();
+    constexpr std::int64_t f = sdk::stale_factor;
+    constexpr std::int64_t large = 1'000'000'000;
+    struct row {
+        const char* name;
+        std::int64_t observed_at;
+        std::int64_t period;
+        std::int64_t now;
+        bool want;
+    };
+    const row rows[] = {
+        // Period 0 and a negative period pin today's behaviour: the bound is
+        // zero or below, so every positive age is stale.
+        {"period 0, age 0", observed, 0, observed, false},
+        {"period 0, age 1", observed, 0, observed + 1, true},
+        {"period -1, age 1", observed, -1, observed + 1, true},
+        // A negative bound also makes an age of 0 stale, and an age down to
+        // the bound itself fresh.
+        {"period -1, age 0", observed, -1, observed, true},
+        {"period -1, age -f", observed, -1, observed - f, false},
+        {"period -1, age -f+1", observed, -1, observed - f + 1, true},
+        {"period 1, age == bound", observed, 1, observed + f, false},
+        {"period 1, age == bound+1", observed, 1, observed + f + 1, true},
+        {"period 3, age == bound", observed, 3, observed + 3 * f, false},
+        {"period 3, age == bound+1", observed, 3, observed + 3 * f + 1, true},
+        {"large period, age == bound", 0, large, large * f, false},
+        {"large period, age == bound+1", 0, large, large * f + 1, true},
+        // max/f is not above max/f, so the bound is f*(max/f) == max-1 here.
+        {"period max/f, age == bound", 0, max / f, f * (max / f), false},
+        {"period max/f, age == max", 0, max / f, max, true},
+        // Above max/f the bound clamps to max, which no age exceeds.
+        {"period max/f+1, age == max", 0, max / f + 1, max, false},
+        {"period max, age == max", 0, max, max, false},
+        // min/f is not below min/f, so the bound is f*(min/f) == min+2 here.
+        {"period min/f, age 0", 0, min / f, 0, true},
+        {"period min/f, age == bound", 0, min / f, f * (min / f), false},
+        {"period min/f, age == min", 0, min / f, min, false},
+        // Below min/f the bound clamps to min: an age of min is fresh, any
+        // other age stale.
+        {"period min/f-1, age == min", 0, min / f - 1, min, false},
+        {"period min/f-1, age == min+1", 0, min / f - 1, min + 1, true},
+        {"period min, age 0", 0, min, 0, true},
+        // A publication time in the future gives a negative age: fresh.
+        {"future, period 1", observed + 10, 1, observed, false},
+        {"future, period 0", observed + 10, 0, observed, false},
+        {"future by max, period 1", max, 1, 0, false},
+    };
+    for (const auto& r : rows) {
+        const bool got = sdk::detail::is_stale(r.observed_at, r.period, r.now);
+        if (got != r.want) {
+            std::fprintf(stderr, "staleness edge: %s\n", r.name);
+        }
+        K3SM_CHECK_EQ(got, r.want);
+    }
+}
+
 void test_helpers() {
     using sdk::rung;
     using sdk::signal_id;
@@ -1255,6 +1315,7 @@ int main() {
     reader_test::test_minor_and_codes();
     reader_test::test_structural_codes_out_of_range();
     reader_test::test_staleness();
+    reader_test::test_staleness_edges();
     reader_test::test_helpers();
     reader_test::test_bytes_until_clamps_negative_inputs();
     reader_test::test_batch_slots_nonpositive_recommendation();
