@@ -729,6 +729,76 @@ void test_open_bad_path_errno() {
     }
 }
 
+// An open that fails at the lock open or at the page open, after the lock
+// was taken, leaves no lock behind: a later open on the same lock path
+// succeeds instead of failing with writer_busy. The lock path and the page
+// path each name a directory in turn, and a page file without permissions
+// fails with EACCES (skipped as root, which ignores the mode).
+void test_open_failure_releases_the_lock() {
+    const std::string page = page_path("relfail.page");
+    const std::string lock = lock_path("relfail.lock");
+    const std::string fresh_lock = lock_path("relfail-fresh.lock");
+    const std::string lock_as_dir = lock_path("relfail-lockdir");
+    const std::string page_as_dir = page_path("relfail-pagedir");
+    const std::string closed_page = page_path("relfail-closed.page");
+    const unlinker guard{page, lock, fresh_lock, closed_page};
+    K3SM_CHECK(::mkdir(lock_as_dir.c_str(), 0700) == 0);
+    K3SM_CHECK(::mkdir(page_as_dir.c_str(), 0755) == 0);
+
+    // (a) The lock path is a directory: the lock open fails, before any lock.
+    {
+        auto failed = sdk::page_writer::open(page.c_str(), lock_as_dir.c_str());
+        K3SM_CHECK(!failed && failed.error() == sdk::error::io);
+        if (!failed) {
+            K3SM_CHECK_EQ(failed.error().sys_errno(), EISDIR);
+        }
+        auto w = sdk::page_writer::open(page.c_str(), fresh_lock.c_str());
+        K3SM_CHECK(w.has_value());
+    }
+
+    // (b) The page path is a directory: the page open fails after the lock
+    // was taken, and the same lock opens again.
+    {
+        auto failed = sdk::page_writer::open(page_as_dir.c_str(), lock.c_str());
+        K3SM_CHECK(!failed && failed.error() == sdk::error::io);
+        if (!failed) {
+            K3SM_CHECK_EQ(failed.error().sys_errno(), EISDIR);
+        }
+        auto w = sdk::page_writer::open(page.c_str(), lock.c_str());
+        K3SM_CHECK(w.has_value());
+        if (!w) {
+            K3SM_CHECK(w.error() != sdk::error::writer_busy);
+        }
+    }
+
+    // (c) A page file with mode 0000: the page open fails with EACCES after
+    // the lock was taken, and the same lock opens again.
+    if (::geteuid() != 0) {
+        const int fd = ::open(closed_page.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        K3SM_CHECK(fd >= 0);
+        if (fd >= 0) {
+            ::close(fd);
+            K3SM_CHECK(::chmod(closed_page.c_str(), 0000) == 0);
+            {
+                auto failed = sdk::page_writer::open(closed_page.c_str(), lock.c_str());
+                K3SM_CHECK(!failed && failed.error() == sdk::error::io);
+                if (!failed) {
+                    K3SM_CHECK_EQ(failed.error().sys_errno(), EACCES);
+                }
+                auto w = sdk::page_writer::open(page.c_str(), lock.c_str());
+                K3SM_CHECK(w.has_value());
+                if (!w) {
+                    K3SM_CHECK(w.error() != sdk::error::writer_busy);
+                }
+            }
+            K3SM_CHECK(::chmod(closed_page.c_str(), 0600) == 0);
+        }
+    }
+
+    ::rmdir(lock_as_dir.c_str());
+    ::rmdir(page_as_dir.c_str());
+}
+
 // Move assignment releases the target's own lock and mapping and takes the
 // source's: the target's old page opens again, the source's page stays held,
 // and the target carries the source's seq and generation. A self-move is a
@@ -1367,6 +1437,7 @@ int main() {
     writer_test::test_open_fails_after_lock();
     writer_test::test_open_argument_and_path_errors();
     writer_test::test_open_bad_path_errno();
+    writer_test::test_open_failure_releases_the_lock();
     writer_test::test_move_assignment();
     writer_test::test_doorbell_silent_when_not_due();
     writer_test::test_resume_odd_seq();
