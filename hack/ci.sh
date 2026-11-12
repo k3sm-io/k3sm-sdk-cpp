@@ -61,7 +61,10 @@
 #               warnings as errors, so they keep compiling between --stress
 #               runs: the stress test RelWithDebInfo under ThreadSanitizer
 #               (without it, and saying so, where it does not link), the
-#               benchmark Release with no sanitizers
+#               benchmark Release with no sanitizers. Where ThreadSanitizer
+#               does not link, the stress test is built without it and the
+#               stage still passes, by design, because the extras are only
+#               compiled and never run.
 #   --cshim     a placeholder until its part of the SDK lands
 #   --linux-vm  a placeholder: this gate does not run the Linux build; run
 #               hack/linux-test.sh on a Linux host instead
@@ -322,7 +325,7 @@ if [ "$stage" = --stress ]; then
 	echo "==> (iii) the test suite under AddressSanitizer and UndefinedBehaviorSanitizer"
 	build_and_test
 	for unity in OFF ON; do
-		grep -q 'K3SM_SDK_HAVE_SANITIZERS:INTERNAL=1' "$tmp/build-unity-$unity/CMakeCache.txt" \
+		sanitizers_linked "$tmp/build-unity-$unity/CMakeCache.txt" \
 			|| { echo "FAIL: this toolchain cannot build the tests with -fsanitize=address,undefined"; exit 1; }
 	done
 

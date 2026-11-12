@@ -10,6 +10,8 @@
 #   - a cache whose probe failed, and one with no probe entry, fail with the
 #     FAIL text unless the waiver is exactly 1, which passes with a WAIVED
 #     line.
+# It also checks statically that no script under hack/ sets the waiver and
+# that hack/ci.sh and hack/linux-test.sh each call require_sanitizers.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=hack/lib/sanitizers.sh
@@ -70,5 +72,15 @@ for fixture in failed absent; do
 done
 sanitizers_linked "$tmp/linked.txt" || { echo "FAIL: sanitizers_linked missed a linked cache"; exit 1; }
 ! sanitizers_linked "$tmp/failed.txt" || { echo "FAIL: sanitizers_linked accepted a failed probe"; exit 1; }
+
+# Static checks: no script sets the waiver itself, and both entry points that
+# build the tests call require_sanitizers.
+setters="$(grep -rnE '^[^#]*(export[[:space:]]+|^[[:space:]]*|[;&|][[:space:]]*)K3SM_SDK_ALLOW_NO_SANITIZERS=' \
+	--include='*.sh' hack | grep -v '^hack/verify-sanitizers-selftest.sh:' || true)"
+[ -z "$setters" ] || { echo "FAIL: a script under hack/ sets K3SM_SDK_ALLOW_NO_SANITIZERS; only the caller may: $setters"; exit 1; }
+for script in hack/ci.sh hack/linux-test.sh; do
+	grep -qE '^[^#]*require_sanitizers ' "$script" \
+		|| { echo "FAIL: $script does not call require_sanitizers"; exit 1; }
+done
 
 echo "    self-test: linked passes silently; a failed or absent probe fails unless K3SM_SDK_ALLOW_NO_SANITIZERS is exactly 1, which prints WAIVED"
