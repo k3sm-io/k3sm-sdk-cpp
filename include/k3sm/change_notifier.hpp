@@ -284,10 +284,10 @@ private:
 #endif
     }
 
-    // open_doorbell watches the doorbell at path. Only a regular file is a
-    // doorbell: anything else is ignored like a path that cannot be opened.
-    // O_NONBLOCK keeps the open of a FIFO with no writer from blocking the
-    // constructor (O_EVTONLY does not prevent that wait).
+    // open_doorbell watches the doorbell at path. On Darwin only a regular
+    // file is a doorbell: anything else is ignored like a path that cannot be
+    // opened. O_NONBLOCK keeps the open of a FIFO with no writer from blocking
+    // the constructor (O_EVTONLY does not prevent that wait).
     void open_doorbell(const char* path) noexcept {
 #if defined(__APPLE__)
         bell_fd_ = ::open(path, O_RDONLY | O_EVTONLY | O_NONBLOCK | O_CLOEXEC);
@@ -310,12 +310,6 @@ private:
         }
         close_doorbell();
 #elif defined(__linux__)
-        // inotify_add_watch opens nothing, so it cannot block on a FIFO;
-        // the stat keeps the regular-file rule the same as on Darwin.
-        struct stat st {};
-        if (::stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
-            return;
-        }
         queue_fd_ = ::inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
         if (queue_fd_ < 0) {
             return;
