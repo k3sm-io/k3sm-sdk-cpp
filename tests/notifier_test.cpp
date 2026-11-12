@@ -78,6 +78,11 @@ struct change_notifier_test_access {
     static std::chrono::nanoseconds slice_for(std::chrono::nanoseconds left) {
         return change_notifier::slice_for(left);
     }
+    // block_doorbell waits on n's doorbell queue alone, for up to left, with
+    // no re-check of the word around it.
+    static bool block_doorbell(change_notifier& n, std::chrono::nanoseconds left) {
+        return n.block_doorbell(left);
+    }
 
     static bool break_queue(change_notifier& n) {
         if (n.queue_fd_ < 0) {
@@ -505,6 +510,71 @@ void test_doorbell_cross_process() {
     K3SM_CHECK(n.source() == sdk::wake_source::doorbell);
 #endif
     K3SM_CHECK_EQ(w.finish(), 0);
+}
+
+// test_doorbell_ring_wakes_the_queue proves the doorbell registration itself
+// wakes a waiter. It blocks on the doorbell queue directly, so the 100 ms
+// re-check of the word inside wait is not in play, and the word is never
+// bumped. block_doorbell returns true on a wake and on a timeout alike, so the
+// proof is the time: the call returns after the ring and long before its
+// several-second ceiling. The control blocks with no ring and returns only
+// when its short ceiling runs out.
+void test_doorbell_ring_wakes_the_queue() {
+#if defined(__APPLE__) || defined(__linux__)
+    const std::string path = tmp_path("ringbell.page");
+    const std::string bell = tmp_path("ringbell.bell");
+    const remove_on_exit cleanup{path, bell};
+    K3SM_CHECK(write_page(path));
+    const int bfd = ::open(bell.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    K3SM_CHECK(bfd >= 0);
+    if (bfd >= 0) {
+        ::close(bfd);
+    }
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        return;
+    }
+    sdk::change_notifier n(*page, bell.c_str(), sdk::wake_source::doorbell);
+    K3SM_CHECK(n.source() == sdk::wake_source::doorbell);
+    if (n.source() != sdk::wake_source::doorbell) {
+        return;
+    }
+    const std::uint64_t before = n.epoch();
+
+    // Control: no ring, so the wait runs to its ceiling.
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        K3SM_CHECK(sdk::change_notifier_test_access::block_doorbell(n, 50ms));
+        const auto waited = std::chrono::steady_clock::now() - t0;
+        K3SM_CHECK(waited >= 49ms);
+        K3SM_CHECK(waited < 2s);
+    }
+
+    // The ring alone ends a wait whose ceiling is 5 s.
+    std::atomic<bool> rang{false};
+    std::thread ringer([&rang, &bell] {
+        std::this_thread::sleep_for(150ms);
+        const int rfd = ::open(bell.c_str(), O_WRONLY | O_CLOEXEC);
+        if (rfd < 0) {
+            return;
+        }
+        const char ring = '1';
+        rang.store(true, std::memory_order_release);
+        (void)::pwrite(rfd, &ring, 1, 0);
+        ::close(rfd);
+    });
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool ok = sdk::change_notifier_test_access::block_doorbell(n, 5s);
+    const auto waited = std::chrono::steady_clock::now() - t0;
+    const bool after_ring = rang.load(std::memory_order_acquire);
+    ringer.join();
+    K3SM_CHECK(ok);
+    K3SM_CHECK(after_ring);
+    K3SM_CHECK(waited < 2s);
+    K3SM_CHECK_EQ(n.epoch(), before);
+    K3SM_CHECK(n.source() == sdk::wake_source::doorbell);
+#endif
 }
 
 // test_doorbell_absent keeps the primary when the producer has no doorbell.
@@ -1215,6 +1285,7 @@ int main(int argc, char** argv) {
     notifier_test::test_timeout();
     notifier_test::test_address_cross_process();
     notifier_test::test_doorbell_cross_process();
+    notifier_test::test_doorbell_ring_wakes_the_queue();
     notifier_test::test_doorbell_absent();
     notifier_test::test_short_page();
     notifier_test::test_notifier_seeded_from_snapshot_reports_intervening_bump();
