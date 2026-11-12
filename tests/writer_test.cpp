@@ -31,6 +31,7 @@ limitations under the License.
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -787,6 +788,29 @@ void test_resume_max_generation() {
     }
 }
 
+constexpr std::int64_t gen_max = std::numeric_limits<std::int64_t>::max();
+constexpr std::int64_t gen_min = std::numeric_limits<std::int64_t>::min();
+static_assert(sdk::detail::next_generation(0) == 1);
+static_assert(sdk::detail::next_generation(1) == 2);
+static_assert(sdk::detail::next_generation(gen_max - 1) == gen_max);
+static_assert(sdk::detail::next_generation(gen_max) == 1);
+static_assert(sdk::detail::next_generation(-1) == 1);
+static_assert(sdk::detail::next_generation(gen_min) == 1);
+
+// One bump on a fresh page raises the generation by exactly one.
+void test_bump_generation_by_one() {
+    const std::string page = page_path("bump1.page");
+    const unlinker guard{page};
+    auto w = sdk::page_writer::open(page.c_str(), lock_path("bump1.lock").c_str());
+    K3SM_CHECK(w.has_value());
+    if (!w) {
+        return;
+    }
+    const std::int64_t before = w->generation();
+    w->bump_generation();
+    K3SM_CHECK_EQ(w->generation(), before + 1);
+}
+
 // Sets the process umask for its lifetime and restores the previous one when
 // it leaves scope, an early return included.
 struct umask_guard {
@@ -1128,6 +1152,7 @@ int main() {
     writer_test::test_resume_odd_seq();
     writer_test::test_resume_negative_generation();
     writer_test::test_resume_max_generation();
+    writer_test::test_bump_generation_by_one();
     writer_test::test_open_file_modes();
     writer_test::test_resume_header_store_order();
     writer_test::test_resume_rollback_page();
