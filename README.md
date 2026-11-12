@@ -8,8 +8,8 @@ node's resource pressure and headroom quickly.
 **Status: the page reader, the change notifier and the page writer are in.** The
 SDK reads the node budget page, ABI major 1: open it, take a stable snapshot,
 decide from it, and wait for the node to report a change. A producer other than
-k3sm can also publish the page with `page_writer`. The C ABI shim and the dump tool come
-next.
+k3sm can also publish the page with `page_writer`. The C ABI shim and the dump
+tool come next.
 
 ## Use it
 
@@ -94,13 +94,14 @@ if (sdk::admit_ok(*s)) {
   `result<snapshot>`. It throws nothing, allocates nothing and never reads the
   environment. `page.read_at(now_unix_seconds)` is the same read with the
   staleness check made against a time you pass.
-- Errors (`error::kind`): `not_found` (no page or no access, or a path that is not
-  a regular file; `sys_errno()` has the errno, `EISDIR` for a directory and
-  `EINVAL` for anything else that is not a regular file), `abi_mismatch` (bad magic, an unknown ABI major or header size, or
-  a code this SDK's tables do not hold), `truncated` (a file shorter than the
-  header says, or a body shorter than its minor's), `corrupt` (a field out
-  of its range), `torn` (no stable copy after `reader_retries` attempts, 64),
-  `stale` (the observation is older than `stale_factor`, 3, writer periods).
+- Errors (`error::kind`): `not_found` (no page or no access, or a path that is
+  not a regular file; `sys_errno()` has the errno, `EISDIR` for a directory and
+  `EINVAL` for anything else that is not a regular file), `abi_mismatch` (bad
+  magic, an unknown ABI major or header size, or a code this SDK's tables do not
+  hold), `truncated` (a file shorter than the header says, or a body shorter
+  than its minor's), `corrupt` (a field out of its range), `torn` (no stable
+  copy after `reader_retries` attempts, 64), `stale` (the observation is older
+  than `stale_factor`, 3, writer periods).
 - A writer that takes the page over rewrites its header in place, so a read
   loads a header that fails the `abi_mismatch` or `truncated` checks again, up
   to 64 times, before it returns that error.
@@ -117,15 +118,16 @@ if (sdk::admit_ok(*s)) {
   one.
 - `change_notifier n(*page)` watches the page's `notifyEpoch` word, which the
   node bumps only when the level, `admit`, a threshold or the generation
-  changes. `n.wait(timeout)` blocks until it moves (true) or the timeout
-  passes (false); `n.poll()` checks it without blocking; `n.epoch()` is the
-  last value seen. A notifier starts from the epoch on the page when it is
-  built; if you read a snapshot first, call `n.seed(s->notify_epoch)` so a
-  bump between the read and the construction is reported by the first wait.
+  changes. `n.wait(timeout)` blocks until it moves (true) or the timeout passes
+  (false); `n.poll()` checks it without blocking; `n.epoch()` is the last value
+  seen. A notifier starts from the epoch on the page when it is built; if you
+  read a snapshot first, call `n.seed(s->notify_epoch)` so a bump between the
+  read and the construction is reported by the first wait.
   `n.wait(std::chrono::nanoseconds::max())` waits with no deadline. Several
-  bumps before a wake are reported as one change. The
-  wait blocks on the word in the shared mapping (`os_sync_wait_on_address` on
-  macOS, `FUTEX_WAIT` on Linux). `change_notifier(page, doorbell_path)` also
+  bumps before a wake are reported as one change.
+
+  The wait blocks on the word in the shared mapping (`os_sync_wait_on_address`
+  on macOS, `FUTEX_WAIT` on Linux). `change_notifier(page, doorbell_path)` also
   takes a doorbell file, if the node provides one, as the fallback (kqueue on
   macOS, inotify on Linux); `n.source()` says which one a wait uses: `address`
   (the word in the mapping), `doorbell` (the doorbell file), `sleep` (neither is
@@ -133,18 +135,20 @@ if (sdk::admit_ok(*s)) {
   the word, so nothing changes). One wait is cut into slices of at most 24
   hours. When the address wait fails for good, the notifier falls back to the
   doorbell if one is open, and only without a doorbell does it sleep and poll
-  the word, in steps of at most 1 millisecond. A third argument,
-  `change_notifier(page, doorbell_path, prefer)`, takes a `wake_source`:
-  `wake_source::doorbell` waits on the doorbell from the start when it opened,
-  and any other value (the default is `wake_source::address`) keeps the word as
-  the primary. While the doorbell is the wake source, the wait re-checks the
-  word every 100 milliseconds at the longest, because a producer may bump the
-  word without writing the doorbell. If the doorbell wait itself fails, the
-  notifier polls the word. On macOS
-  a doorbell path that is not a regular file (a FIFO, for example) is ignored
-  like one that cannot be opened, and the notifier uses its other wake source. The page
-  must outlive the notifier. To act on every sample instead, call `read()` on
-  your own schedule.
+  the word, in steps of at most 1 millisecond.
+
+  A third argument, `change_notifier(page, doorbell_path, prefer)`, takes a
+  `wake_source`: `wake_source::doorbell` waits on the doorbell from the start
+  when it opened, and any other value (the default is `wake_source::address`)
+  keeps the word as the primary. While the doorbell is the wake source, the wait
+  re-checks the word every 100 milliseconds at the longest, because a producer
+  may bump the word without writing the doorbell. If the doorbell wait itself
+  fails, the notifier polls the word. On macOS a doorbell path that is not a
+  regular file (a FIFO, for example) is ignored like one that cannot be opened,
+  and the notifier uses its other wake source.
+
+  The page must outlive the notifier. To act on every sample instead, call
+  `read()` on your own schedule.
 
   ```cpp
   sdk::change_notifier bell(*page);
@@ -178,8 +182,8 @@ the page path, a lock file path and, optionally, a doorbell path, then publish a
 ```cpp
 auto w = sdk::page_writer::open("/run/app/budget.v1.page", "/run/app.lock",
                                 "/run/app/budget.doorbell");
-if (!w) return 1;                      // w.error().name() says which error
-auto seq = w->publish(snap);           // the new, even seq, or an error
+if (!w) return 1;                // w.error().name() says which error
+auto seq = w->publish(snap);     // the new, even seq, or an error
 ```
 
 - `open` takes an exclusive lock on the lock file, creates the page (mode 0644,
@@ -213,7 +217,7 @@ ctest --test-dir build --output-on-failure
 hack/ci.sh            # the full gate
 hack/ci.sh --reader   # the page reader's tests alone
 hack/ci.sh --notifier # the change notifier's tests alone
-hack/ci.sh --stress   # ThreadSanitizer stress, fuzz smoke, ASan/UBSan, benchmark
+hack/ci.sh --stress   # ThreadSanitizer stress, fuzz smoke, ASan/UBSan, bench
 ```
 
 Requirements: CMake 3.24 or later and a C++20 compiler (Apple clang from the
