@@ -78,8 +78,9 @@ enum class wake_source : std::uint8_t {
 
 // change_notifier reports changes of one page's notifyEpoch word. It
 // remembers the last epoch it reported (at first the epoch at
-// construction, or the one given to seed) and reports a change once. The page must outlive it. It is
-// move-only; use one notifier per waiting thread.
+// construction, or the one given to seed) and reports a change once. The
+// page must outlive it. It is move-only; use one notifier per waiting
+// thread.
 class change_notifier {
 public:
     // sleep_step is the longest sleep between two polls of the word when
@@ -176,15 +177,22 @@ public:
             if (left <= std::chrono::nanoseconds::zero()) {
                 return false;
             }
-            block(std::chrono::duration_cast<std::chrono::nanoseconds>(left));
+            // One slice is at most a day: the loop re-checks the deadline, and
+            // the OS waits never see a count near nanoseconds::max().
+            block(std::min(std::chrono::duration_cast<std::chrono::nanoseconds>(left),
+                           max_slice));
         }
     }
 
     // seed sets the last reported epoch to e, the notify_epoch of a
     // snapshot the caller already read. A bump between that read and the
     // notifier's construction is then reported by the next poll or wait at
-    // once instead of being taken as already seen. A notifier whose page is
-    // too short to hold notifyEpoch ignores it.
+    // once instead of being taken as already seen. Call it before the first
+    // poll or wait, on the waiting thread; it is not safe to call
+    // concurrently with any other member. Any e different from the live word,
+    // one ahead of it included, makes the next poll or wait report a change
+    // once. A moved-from notifier, or one whose page is too short to hold
+    // notifyEpoch, ignores it and epoch() stays as it was.
     void seed(std::uint64_t e) noexcept {
         if (word_ != nullptr) {
             last_ = e;
@@ -199,6 +207,10 @@ public:
     wake_source source() const noexcept { return source_; }
 
 private:
+    // max_slice is the longest single block inside wait; a longer timeout
+    // is waited out in several slices.
+    static constexpr std::chrono::nanoseconds max_slice = std::chrono::hours(24);
+
     std::uint64_t load() const noexcept {
         return std::atomic_ref<std::uint64_t>(*word_).load(std::memory_order_acquire);
     }
