@@ -178,6 +178,9 @@ standard library. `hack/ci.sh --stress` also needs a clang with libFuzzer, which
 Apple clang does not ship: on macOS, `brew install llvm` provides one, and
 `K3SM_SDK_FUZZ_CXX` can name any other.
 
+`hack/ci.sh` runs on macOS only. On Linux, `hack/linux-test.sh` builds and runs
+the tests with the compiler named by `CXX`.
+
 ## Contributing
 
 See `CONTRIBUTING.md`. Every commit is signed off for the Developer
