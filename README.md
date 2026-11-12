@@ -131,8 +131,16 @@ if (sdk::admit_ok(*s)) {
   (the word in the mapping), `doorbell` (the doorbell file), `sleep` (neither is
   available, so the word is polled) or `none` (the mapping is too short to hold
   the word, so nothing changes). One wait is cut into slices of at most 24
-  hours, and after a failed kernel wait the notifier polls the word every
-  millisecond. On macOS
+  hours. When the address wait fails for good, the notifier falls back to the
+  doorbell if one is open, and only without a doorbell does it sleep and poll
+  the word, in steps of at most 1 millisecond. A third argument,
+  `change_notifier(page, doorbell_path, prefer)`, takes a `wake_source`:
+  `wake_source::doorbell` waits on the doorbell from the start when it opened,
+  and any other value (the default is `wake_source::address`) keeps the word as
+  the primary. While the doorbell is the wake source, the wait re-checks the
+  word every 100 milliseconds at the longest, because a producer may bump the
+  word without writing the doorbell. If the doorbell wait itself fails, the
+  notifier polls the word. On macOS
   a doorbell path that is not a regular file (a FIFO, for example) is ignored
   like one that cannot be opened, and the notifier uses its other wake source. The page
   must outlive the notifier. To act on every sample instead, call `read()` on
@@ -161,15 +169,48 @@ The page layout and its golden fixtures come from the k3sm `apis` repository;
 the copies under `tests/fixtures/page` are checked against their digests by
 `hack/verify-fixtures.sh`.
 
+## Writing the page
+
+A producer other than k3sm publishes the page with `page_writer`. Open it with
+the page path, a lock file path and, optionally, a doorbell path, then publish a
+`snapshot`:
+
+```cpp
+auto w = sdk::page_writer::open("/run/app/budget.v1.page", "/run/app.lock",
+                                "/run/app/budget.doorbell");
+if (!w) return 1;                      // w.error().name() says which error
+auto seq = w->publish(snap);           // the new, even seq, or an error
+```
+
+- `open` takes an exclusive lock on the lock file, creates the page (mode 0644,
+  sized to `page_size`) if it is missing, and takes over an existing one without
+  truncating or replacing it. A reader's open mapping survives a writer restart.
+  The writer's generation is the page's previous generation plus one, or 1 on a
+  new page.
+- The lock file must not be in the page's directory, since a pod can open that
+  directory. There is one writer per page.
+- `publish` refuses a snapshot the layout cannot carry before it stores
+  anything. It bumps `notifyEpoch`, wakes the waiters and writes the doorbell
+  on the first publish, and after that only when `notify_due` says the level,
+  `admit`, the generation or a threshold changed. `bump_generation()` adds one
+  to the generation on a policy change.
+- The writer-side error kinds are `writer_busy` (another writer holds the lock),
+  `invalid_argument` (from `open`: a null path, or a lock file in the page's
+  directory), `invalid_snapshot`, `node_name_too_long` and `io`, which
+  carries the `errno` of the failing call in `sys_errno()`.
+- A `page_writer` is move-only and not safe for concurrent use from several
+  threads.
+
 ## Build and test
 
 ```sh
 cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
-hack/ci.sh          # the full gate
-hack/ci.sh --reader # the page reader's tests alone
-hack/ci.sh --stress # ThreadSanitizer stress, fuzz smoke, ASan/UBSan, benchmark
+hack/ci.sh            # the full gate
+hack/ci.sh --reader   # the page reader's tests alone
+hack/ci.sh --notifier # the change notifier's tests alone
+hack/ci.sh --stress   # ThreadSanitizer stress, fuzz smoke, ASan/UBSan, benchmark
 ```
 
 Requirements: CMake 3.24 or later and a C++20 compiler (Apple clang from the
