@@ -234,6 +234,12 @@ standard library. `hack/ci.sh --stress` also needs a clang with libFuzzer, which
 Apple clang does not ship: on macOS, `brew install llvm` provides one, and
 `K3SM_SDK_FUZZ_CXX` can name any other.
 
+The tests build and run under AddressSanitizer and UndefinedBehaviorSanitizer.
+When the compiler cannot link `-fsanitize=address,undefined`, `hack/ci.sh` and
+`hack/linux-test.sh` fail and say so. Setting `K3SM_SDK_ALLOW_NO_SANITIZERS=1`
+runs the tests without the sanitizers instead, and the run prints a `WAIVED`
+line; `hack/ci.sh --stress` takes no such waiver.
+
 `hack/ci.sh` is the macOS gate and does not build the Linux tests. On a Linux
 host, run `hack/linux-test.sh`: it builds and runs the tests with the compiler
 named by `CXX`.

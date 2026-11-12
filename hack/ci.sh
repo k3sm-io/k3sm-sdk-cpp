@@ -5,8 +5,8 @@
 # ci.sh -- the k3sm C++ SDK's gate. Run from anywhere; it works on a lone clone.
 #
 #   1. cmake configure, build and ctest (C++20, warnings as errors, the tests
-#      under AddressSanitizer and UndefinedBehaviorSanitizer when the toolchain
-#      supports them), once as separate sources and once as a unity build
+#      under AddressSanitizer and UndefinedBehaviorSanitizer), once as separate
+#      sources and once as a unity build
 #      (CMAKE_UNITY_BUILD), which merges each test target's sources into one
 #      translation unit (the version test's two sources, version_test.cpp and
 #      second_tu.cpp, check the headers survive that)
@@ -17,6 +17,8 @@
 #   4. the version check: tag, CMake version and generated header agree
 #      (hack/verify-version.sh, after its self-test,
 #      hack/verify-version-selftest.sh)
+#   4a. the sanitizer requirement can fail and honours only its waiver
+#      (hack/verify-sanitizers-selftest.sh)
 #   5. shellcheck over every hack/**/*.sh, and hack/linux-test.sh (the
 #      entry point on a Linux host) refuses on any other host
 #   6. every C and C++ file carries the Apache-2.0 header
@@ -29,12 +31,12 @@
 #   --reader    the page reader: the fixture check, then the reader tests
 #               (golden and negative fixtures, layout, torn reads) built and
 #               run as separate sources and as a unity build, under the
-#               sanitizers where the toolchain supports them
+#               sanitizers
 #   --notifier  the change notifier: the notifier tests (poll, timeout, and
 #               a spawned writer process waking the waiter through the
 #               notifyEpoch word and through a doorbell file) built and run
 #               as separate sources and as a unity build, under the
-#               sanitizers where the toolchain supports them
+#               sanitizers
 #   --stress    the quality bar, in four parts:
 #               (i)   the torn-read stress (a writer thread at full speed
 #                     against reader threads) built and run under
@@ -63,6 +65,13 @@
 #   --cshim     a placeholder until its part of the SDK lands
 #   --linux-vm  a placeholder: this gate does not run the Linux build; run
 #               hack/linux-test.sh on a Linux host instead
+#
+# Every stage that builds the tests requires AddressSanitizer and
+# UndefinedBehaviorSanitizer (hack/lib/sanitizers.sh). A toolchain that cannot
+# link -fsanitize=address,undefined fails the gate; only Clang and GNU
+# compilers are probed. Setting K3SM_SDK_ALLOW_NO_SANITIZERS=1 waives that in
+# the bare gate, --reader and --notifier: the tests then build and run without
+# sanitizers and every build prints a WAIVED line. --stress takes no waiver.
 #
 # The bare gate runs the unit tests in stage 1 and the notifier tests, which
 # spawn a process, through the --notifier stage after stage 9, then compiles
@@ -144,16 +153,32 @@ for tool in cmake ctest git; do
 	command -v "$tool" >/dev/null || { echo "FAIL: $tool is not installed"; exit 1; }
 done
 
+# The script has cd'd to the repository root, its own directory's parent.
+# shellcheck source=hack/lib/sanitizers.sh
+. hack/lib/sanitizers.sh
+
 # build_and_test [ctest args...]: configure, build and ctest once as
-# separate sources and once as a unity build.
+# separate sources and once as a unity build. The tests must build under
+# AddressSanitizer and UndefinedBehaviorSanitizer: require_sanitizers fails
+# the gate when they do not link, unless K3SM_SDK_ALLOW_NO_SANITIZERS=1
+# waives it. --stress takes no waiver.
 build_and_test() {
 	local unity b san
 	for unity in OFF ON; do
 		b="$tmp/build-unity-$unity"
 		cmake -S . -B "$b" -DCMAKE_BUILD_TYPE=Debug -DCMAKE_UNITY_BUILD="$unity" > "$tmp/configure.log" \
 			|| { cat "$tmp/configure.log"; echo "FAIL: cmake configure (unity $unity)"; exit 1; }
-		grep -q 'K3SM_SDK_HAVE_SANITIZERS:INTERNAL=1' "$b/CMakeCache.txt" \
-			&& san="with sanitizers" || san="without sanitizers (unsupported here)"
+		if [ "$stage" = --stress ]; then
+			sanitizers_linked "$b/CMakeCache.txt" \
+				|| { echo "FAIL: this toolchain cannot build the tests with -fsanitize=address,undefined"; exit 1; }
+		else
+			require_sanitizers "$b/CMakeCache.txt" || exit 1
+		fi
+		if sanitizers_linked "$b/CMakeCache.txt"; then
+			san="with sanitizers"
+		else
+			san="WITHOUT sanitizers (waived)"
+		fi
 		cmake --build "$b" --parallel "$jobs"
 		ctest --test-dir "$b" --output-on-failure "$@"
 		echo "    ok (unity $unity, $san)"
@@ -389,6 +414,9 @@ echo "    ok"
 echo "==> version (tag, CMake, generated header)"
 bash hack/verify-version-selftest.sh
 bash hack/verify-version.sh "$tmp/build-unity-OFF"
+
+echo "==> sanitizer requirement (hack/lib/sanitizers.sh)"
+bash hack/verify-sanitizers-selftest.sh
 
 echo "==> shellcheck (hack/**/*.sh)"
 command -v shellcheck >/dev/null || { echo "FAIL: shellcheck is not installed"; exit 1; }
