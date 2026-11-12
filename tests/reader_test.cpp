@@ -714,7 +714,7 @@ void test_manifest_fixture_list() {
 void test_negative_cases() {
     const std::string m = read_file(fixture("manifest.json"));
     const auto cases = k3sm_test::json_objects(m, "negative");
-    K3SM_CHECK_EQ(cases.size(), 6u);
+    K3SM_CHECK_EQ(cases.size(), 12u);
     for (const std::string& c : cases) {
         const std::string file = k3sm_test::json_value(c, "file");
         const std::string want = k3sm_test::json_value(c, "error");

@@ -145,6 +145,42 @@
       "sha256": "bb59f08dab0330614430a58349c01c1b9e3fc0b8c98bde1898ae1cd718ce721d",
       "error": "corrupt",
       "encoderError": "nodeNameTooLong"
+    },
+    {
+      "name": "zero-period",
+      "file": "negative/zero-period.v1.page",
+      "sha256": "8094835a78fc31dfb8bce2369eb26eb374761637bdae0001c5dcd847ad531b13",
+      "error": "corrupt"
+    },
+    {
+      "name": "platform-zero",
+      "file": "negative/platform-zero.v1.page",
+      "sha256": "b78a7265dfedfb41e93342da885833378c61e2bf6060124c60f708c34341f1cd",
+      "error": "corrupt"
+    },
+    {
+      "name": "level-zero",
+      "file": "negative/level-zero.v1.page",
+      "sha256": "a598e4147b5dc5a11500160116d7348fa7b926faa2b31d8d78cdbb962ef294d6",
+      "error": "corrupt"
+    },
+    {
+      "name": "unit-zero",
+      "file": "negative/unit-zero.v1.page",
+      "sha256": "dbbcf331629df227dffc0cca4dd7f79dd0abd13e28de5ec59f97514ade9045e7",
+      "error": "corrupt"
+    },
+    {
+      "name": "platform-zero-level-unknown",
+      "file": "negative/platform-zero-level-unknown.v1.page",
+      "sha256": "4ad2d48b1a11f06ec7d116cc864179c1662f3b94b1bffd23d7f505d408539dea",
+      "error": "corrupt"
+    },
+    {
+      "name": "slot-id-unknown-unit-zero",
+      "file": "negative/slot-id-unknown-unit-zero.v1.page",
+      "sha256": "bb8ff884071cbfbfa416f97da5ea9b282ee7b7412b762a15bedfece2c9168318",
+      "error": "abiMismatch"
     }
   ],
   "notifyVectors": [
