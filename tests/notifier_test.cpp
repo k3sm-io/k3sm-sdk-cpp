@@ -27,6 +27,7 @@ limitations under the License.
 #include <k3sm/change_notifier.hpp>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -83,6 +84,13 @@ struct change_notifier_test_access {
     static bool block_doorbell(change_notifier& n, std::chrono::nanoseconds left) {
         return n.block_doorbell(left);
     }
+    // address_wait_ok classifies one address wait's return as normal or as
+    // the primitive failing for good.
+    static constexpr bool address_wait_ok(int rc, int err) {
+        return change_notifier::address_wait_ok(rc, err);
+    }
+    // fall_back demotes n as a failed address wait does.
+    static void fall_back(change_notifier& n) { n.fall_back(); }
 
     static bool break_queue(change_notifier& n) {
         if (n.queue_fd_ < 0) {
@@ -1279,6 +1287,116 @@ void test_short_page_given_a_doorbell() {
     K3SM_CHECK_EQ(k3sm_test::open_fd_count(), before);
 }
 
+// test_address_wait_classifies_errno pins which address wait returns are
+// normal (a wake, the timeout, a signal, and on Linux a futex whose word
+// already moved) and which mean the primitive failed for good, the case that
+// demotes the notifier.
+void test_address_wait_classifies_errno() {
+    using access = sdk::change_notifier_test_access;
+    struct row {
+        int rc;
+        int err;
+        bool ok;
+    };
+    const row rows[] = {
+        {0, 0, true},
+        {0, EINVAL, true},
+        {-1, ETIMEDOUT, true},
+        {-1, EINTR, true},
+#if defined(__linux__)
+        {-1, EAGAIN, true},
+#else
+        {-1, EAGAIN, false},
+#endif
+        {-1, EINVAL, false},
+        {-1, EFAULT, false},
+        {-1, ENOMEM, false},
+        {-1, 0, false},
+    };
+    for (const row& r : rows) {
+        if (access::address_wait_ok(r.rc, r.err) != r.ok) {
+            std::fprintf(stderr, "address_wait_ok(%d, %d) != %d\n", r.rc, r.err, r.ok ? 1 : 0);
+            k3sm_test::fail(__FILE__, __LINE__, "address_wait_ok");
+        }
+    }
+}
+
+// fall_back_and_see_a_bump demotes n, which must wait on the word, checks it
+// moves to want, and checks a later bump of the word alone (no wake, no
+// doorbell write) is still reported well before the wait's timeout.
+void fall_back_and_see_a_bump(sdk::change_notifier& n, rw_page& rw, sdk::wake_source want) {
+    K3SM_CHECK(n.source() == sdk::wake_source::address);
+    if (n.source() != sdk::wake_source::address) {
+        return;
+    }
+    sdk::change_notifier_test_access::fall_back(n);
+    K3SM_CHECK(n.source() == want);
+
+    std::thread bumper([&rw] {
+        std::this_thread::sleep_for(20ms);
+        rw.bump();
+    });
+    const std::uint64_t before = n.epoch();
+    const auto t0 = std::chrono::steady_clock::now();
+    K3SM_CHECK(n.wait(1s));
+    K3SM_CHECK(std::chrono::steady_clock::now() - t0 < 500ms);
+    bumper.join();
+    K3SM_CHECK_EQ(n.epoch(), before + 1);
+    K3SM_CHECK(n.source() == want);
+}
+
+// test_failed_address_wait_demotes_to_the_doorbell: a notifier that waits on
+// the word and keeps a doorbell moves to the doorbell when the address wait
+// fails for good, and still reports a bump.
+void test_failed_address_wait_demotes_to_the_doorbell() {
+#if defined(__APPLE__) || defined(__linux__)
+    const std::string path = tmp_path("demotebell.page");
+    const std::string bell = tmp_path("demotebell.bell");
+    const remove_on_exit cleanup{path, bell};
+    K3SM_CHECK(write_page(path));
+    const int bfd = ::open(bell.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    K3SM_CHECK(bfd >= 0);
+    if (bfd >= 0) {
+        ::close(bfd);
+    }
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        return;
+    }
+    rw_page rw(path);
+    K3SM_CHECK(rw.base != nullptr);
+    if (rw.base == nullptr) {
+        return;
+    }
+    sdk::change_notifier n(*page, bell.c_str());
+    fall_back_and_see_a_bump(n, rw, sdk::wake_source::doorbell);
+#endif
+}
+
+// test_failed_address_wait_demotes_to_sleep: a notifier that waits on the
+// word with no doorbell moves to sleeping between polls when the address
+// wait fails for good, and still reports a bump.
+void test_failed_address_wait_demotes_to_sleep() {
+#if defined(__APPLE__) || defined(__linux__)
+    const std::string path = tmp_path("demotesleep.page");
+    const remove_on_exit cleanup{path};
+    K3SM_CHECK(write_page(path));
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        return;
+    }
+    rw_page rw(path);
+    K3SM_CHECK(rw.base != nullptr);
+    if (rw.base == nullptr) {
+        return;
+    }
+    sdk::change_notifier n(*page);
+    fall_back_and_see_a_bump(n, rw, sdk::wake_source::sleep);
+#endif
+}
+
 }  // namespace notifier_test
 
 int main(int argc, char** argv) {
@@ -1307,6 +1425,9 @@ int main(int argc, char** argv) {
     notifier_test::test_doorbell_character_device_is_ignored();
     notifier_test::test_kept_doorbell_with_the_word_as_primary();
     notifier_test::test_short_page_given_a_doorbell();
+    notifier_test::test_address_wait_classifies_errno();
+    notifier_test::test_failed_address_wait_demotes_to_the_doorbell();
+    notifier_test::test_failed_address_wait_demotes_to_sleep();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "notifier_test: %d failure(s)\n", k3sm_test::failures());
         return 1;
