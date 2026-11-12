@@ -793,6 +793,8 @@ void test_open_failure_releases_the_lock() {
             }
             K3SM_CHECK(::chmod(closed_page.c_str(), 0600) == 0);
         }
+    } else {
+        std::fprintf(stderr, "skip: the mode-0000 page case needs a non-root user\n");
     }
 
     ::rmdir(lock_as_dir.c_str());
