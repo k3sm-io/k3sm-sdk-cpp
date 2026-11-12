@@ -82,11 +82,22 @@ sdk::result<sdk::snapshot> open_read(const std::string& path, std::int64_t now =
 std::string write_temp(const std::string& bytes) {
     std::string path = std::string(K3SM_SDK_TEST_TMPDIR) + "/page-XXXXXX";
     const int fd = ::mkstemp(path.data());
-    if (fd < 0 || ::write(fd, bytes.data(), bytes.size()) != static_cast<ssize_t>(bytes.size())) {
-        std::fprintf(stderr, "cannot write %s\n", path.c_str());
+    if (fd < 0) {
+        std::fprintf(stderr, "cannot create %s\n", path.c_str());
         std::exit(2);
     }
-    ::close(fd);
+    if (::write(fd, bytes.data(), bytes.size()) != static_cast<ssize_t>(bytes.size())) {
+        std::fprintf(stderr, "cannot write %s\n", path.c_str());
+        std::fprintf(stderr, "cannot write %s\n", path.c_str());
+        ::close(fd);
+        ::unlink(path.c_str());
+        std::exit(2);
+    }
+    if (::close(fd) != 0) {
+        std::fprintf(stderr, "cannot close %s\n", path.c_str());
+        ::unlink(path.c_str());
+        std::exit(2);
+    }
     return path;
 }
 
