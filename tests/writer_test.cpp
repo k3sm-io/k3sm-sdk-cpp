@@ -746,6 +746,47 @@ void test_resume_negative_generation() {
     }
 }
 
+// A stored generation with no successor (INT64_MAX) restarts at 1 instead of
+// overflowing; INT64_MAX-1 resumes at INT64_MAX, and one bump from there
+// restarts at 1.
+void test_resume_max_generation() {
+    const std::string page = page_path("maxgen.page");
+    const unlinker guard{page};
+    constexpr std::int64_t max = INT64_MAX;
+    const struct {
+        std::int64_t stored;
+        std::int64_t want;
+    } cases[] = {{max, 1}, {max - 1, max}};
+    for (const auto& c : cases) {
+        std::string bytes = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
+        put_u64(bytes, sdk::page_offset::generation, static_cast<std::uint64_t>(c.stored));
+        {
+            const int fd = ::open(page.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+            K3SM_CHECK(fd >= 0 && ::write(fd, bytes.data(), bytes.size()) == static_cast<ssize_t>(bytes.size()));
+            ::close(fd);
+        }
+        auto w = sdk::page_writer::open(page.c_str(), lock_path("maxgen.lock").c_str());
+        K3SM_CHECK(w.has_value());
+        if (!w) {
+            continue;
+        }
+        if (w->generation() != c.want) {
+            std::fprintf(stderr, "stored generation %lld: resumed at %lld, want %lld\n",
+                         static_cast<long long>(c.stored), static_cast<long long>(w->generation()),
+                         static_cast<long long>(c.want));
+            K3SM_CHECK(false);
+        }
+        if (c.want == max) {
+            w->bump_generation();
+            if (w->generation() != 1) {
+                std::fprintf(stderr, "bump from INT64_MAX gave %lld, want 1\n",
+                             static_cast<long long>(w->generation()));
+                K3SM_CHECK(false);
+            }
+        }
+    }
+}
+
 // Sets the process umask for its lifetime and restores the previous one when
 // it leaves scope, an early return included.
 struct umask_guard {
@@ -1086,6 +1127,7 @@ int main() {
     writer_test::test_doorbell_silent_when_not_due();
     writer_test::test_resume_odd_seq();
     writer_test::test_resume_negative_generation();
+    writer_test::test_resume_max_generation();
     writer_test::test_open_file_modes();
     writer_test::test_resume_header_store_order();
     writer_test::test_resume_rollback_page();

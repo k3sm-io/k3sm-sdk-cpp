@@ -42,8 +42,10 @@ limitations under the License.
 // page's directory (a pod can open that directory). The writer owns the
 // page's generation: at every open (a writer restart) it is the previous
 // generation plus one on a page of this ABI major, and 1 on a new page or a
-// page with a foreign header, whose generation word cannot be trusted.
-// bump_generation() adds one on a policy change. A reader therefore cannot
+// page with a foreign header, whose generation word cannot be trusted. It
+// also restarts at 1 when the previous generation is negative or has no
+// successor (INT64_MAX). bump_generation() adds one on a policy change, with
+// the same restart at INT64_MAX. A reader therefore cannot
 // rely on the generation's order, or on seeing it change, across a rewrite by
 // a writer of a foreign ABI.
 
@@ -55,6 +57,7 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <utility>
 
 #include <fcntl.h>
@@ -405,6 +408,12 @@ inline bool resume_shrinks(std::uint64_t body_size_word) noexcept {
     return static_cast<std::uint32_t>(body_size_word) > page_body_size;
 }
 
+// next_generation is the generation after g. It restarts at 1 when g is
+// negative or INT64_MAX, which has no successor (adding one would overflow).
+inline constexpr std::int64_t next_generation(std::int64_t g) noexcept {
+    return g < 0 || g == std::numeric_limits<std::int64_t>::max() ? 1 : g + 1;
+}
+
 }  // namespace detail
 
 // encode_page writes the page of s into dst[0, page_size), deterministically,
@@ -449,7 +458,8 @@ public:
     // truncated or replaced), maps it shared and takes it over: seq and
     // notifyEpoch continue from a page of this ABI major, the generation is
     // that page's previous generation plus one (1 on a new page or a page with
-    // a foreign header, whose generation word cannot be trusted), and the
+    // a foreign header, whose generation word cannot be trusted, and 1 when
+    // the previous generation is negative or has no successor), and the
     // header line is rewritten with the magic last (a page whose magic was
     // already intact is recognised at the word-8 store instead).
     // doorbell_path, when not null, names a doorbell file (created 0644 if
@@ -557,9 +567,10 @@ public:
         return seq_;
     }
 
-    // bump_generation adds one to the generation, for a policy change. The
-    // next publish carries it and so bumps notifyEpoch.
-    void bump_generation() noexcept { ++generation_; }
+    // bump_generation adds one to the generation, for a policy change, and
+    // restarts it at 1 from INT64_MAX. The next publish carries it and so
+    // bumps notifyEpoch.
+    void bump_generation() noexcept { generation_ = detail::next_generation(generation_); }
 
     // generation is the generation the next publish writes.
     std::int64_t generation() const noexcept { return generation_; }
@@ -595,7 +606,7 @@ private:
                 ++seq_;
             }
         }
-        generation_ = previous < 0 ? 1 : previous + 1;
+        generation_ = detail::next_generation(previous);
 
         detail::page_image header{};
         header.put(off::magic, detail::page_magic_word());
