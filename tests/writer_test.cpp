@@ -269,6 +269,87 @@ void test_encode_refusals() {
     K3SM_CHECK(invalid([](sdk::snapshot& t) { t.counters[0].band = sdk::band::unset; }));
 }
 
+// Each field check of the encoder, one mutated field per case, from the
+// darwin golden or, for the linux cases, the linux producer golden: every
+// case is refused as invalid_snapshot, and the unmutated baseline is not.
+// Two of them are also refused by a live publish that leaves the page as it
+// was.
+struct field_case {
+    const char* name;
+    bool linux_golden;
+    void (*mutate)(sdk::snapshot&);
+};
+
+void test_encode_field_checks() {
+    const sdk::snapshot darwin = golden("darwin.v1.page");
+    const sdk::snapshot linux_producer = golden("linux-producer.v1.page");
+    K3SM_CHECK(darwin.signal_count > 1);
+    K3SM_CHECK(darwin.counter_count > 1);
+    unsigned char buf[sdk::page_size];
+    for (const sdk::snapshot* base : {&darwin, &linux_producer}) {
+        K3SM_CHECK(sdk::encode_page(*base, buf, sizeof buf).has_value());
+    }
+
+    const field_case cases[] = {
+        {"linux block unset on a linux page", true, [](sdk::snapshot& t) { t.linux_.reset(); }},
+        {"darwin block on a linux page", true, [](sdk::snapshot& t) { t.darwin = sdk::darwin_signals{}; }},
+        {"admit reason signal out of range", false,
+         [](sdk::snapshot& t) { t.admit_reason_signal = static_cast<sdk::signal_id>(sdk::detail::signal_codes + 1); }},
+        {"kill mode out of range", false,
+         [](sdk::snapshot& t) { t.kill_mode.mode = static_cast<sdk::kill_mode>(sdk::detail::kill_mode_codes + 1); }},
+        {"kill mode reason out of range", false,
+         [](sdk::snapshot& t) {
+             t.kill_mode.reason = static_cast<sdk::kill_mode_reason>(sdk::detail::kill_mode_reason_codes + 1);
+         }},
+        {"recommendation basis out of range", false,
+         [](sdk::snapshot& t) { t.recommendation.basis = static_cast<sdk::signal_id>(sdk::detail::signal_codes + 1); }},
+        {"signal id out of range", false,
+         [](sdk::snapshot& t) { t.signals[0].id = static_cast<sdk::signal_id>(sdk::detail::signal_codes + 1); }},
+        {"trend out of range", false,
+         [](sdk::snapshot& t) { t.signals[0].trend = static_cast<sdk::trend>(sdk::detail::trend_codes + 1); }},
+        {"limiting resource out of range", false,
+         [](sdk::snapshot& t) {
+             t.signals[0].limiting_resource = static_cast<sdk::limiting_resource>(sdk::detail::limiting_resource_codes + 1);
+         }},
+        {"shared with out of range", false,
+         [](sdk::snapshot& t) { t.signals[0].shared_with = static_cast<sdk::signal_id>(sdk::detail::signal_codes + 1); }},
+        {"unit out of range on the last slot", false,
+         [](sdk::snapshot& t) { t.signals[t.signal_count - 1].unit = static_cast<sdk::unit>(sdk::detail::unit_codes + 1); }},
+        {"band out of range", false,
+         [](sdk::snapshot& t) { t.counters[0].band = static_cast<sdk::band>(sdk::detail::band_codes + 1); }},
+        {"band out of range on the last counter", false,
+         [](sdk::snapshot& t) { t.counters[t.counter_count - 1].band = static_cast<sdk::band>(sdk::detail::band_codes + 1); }},
+    };
+    for (const field_case& c : cases) {
+        sdk::snapshot t = c.linux_golden ? linux_producer : darwin;
+        c.mutate(t);
+        const auto e = sdk::encode_page(t, buf, sizeof buf);
+        if (e || e.error() != sdk::error::invalid_snapshot) {
+            k3sm_test::fail(__FILE__, __LINE__, c.name);
+        }
+    }
+
+    const std::string page = page_path("fields.page");
+    const std::string lock = lock_path("fields.lock");
+    const unlinker guard{page, lock};
+    auto w = sdk::page_writer::open(page.c_str(), lock.c_str());
+    K3SM_CHECK(w.has_value());
+    if (!w) {
+        return;
+    }
+    K3SM_CHECK(w->publish(darwin).has_value());
+    for (std::size_t i : {std::size_t{4}, std::size_t{10}}) {
+        const std::string before = k3sm_test::read_file(page);
+        sdk::snapshot bad = darwin;
+        cases[i].mutate(bad);
+        const auto refused = w->publish(bad);
+        if (refused || refused.error() != sdk::error::invalid_snapshot) {
+            k3sm_test::fail(__FILE__, __LINE__, cases[i].name);
+        }
+        K3SM_CHECK_EQ(first_difference(before, k3sm_test::read_file(page)), -1);
+    }
+}
+
 // set_field applies one notify vector to s; false for a field it does not know.
 bool set_field(sdk::snapshot& s, const std::string& field, std::int64_t v) {
     auto opt = [&](sdk::opt_i64& o) {
@@ -1236,6 +1317,7 @@ int main() {
     writer_test::test_golden_absent_by_hand();
     writer_test::test_encode_minor1_fields();
     writer_test::test_encode_refusals();
+    writer_test::test_encode_field_checks();
     writer_test::test_notify_vectors();
     writer_test::test_live_page();
     writer_test::test_lock_left_by_dead_writer();
