@@ -1027,8 +1027,11 @@ void test_kept_doorbell_with_the_word_as_primary() {
     if (rw.base == nullptr) {
         return;
     }
+    const int base_fds = k3sm_test::open_fd_count();
     sdk::change_notifier n1(*page, bell.c_str());
     sdk::change_notifier n2(*page, bell.c_str(), sdk::wake_source::sleep);
+    // The kept doorbell holds descriptors while the notifiers live.
+    K3SM_CHECK(k3sm_test::open_fd_count() > base_fds);
     K3SM_CHECK(n1.source() == sdk::wake_source::address);
     K3SM_CHECK(n2.source() == sdk::wake_source::address);
 
