@@ -19,6 +19,8 @@
 #      hack/verify-version-selftest.sh)
 #   4a. the sanitizer requirement can fail and honours only its waiver
 #      (hack/verify-sanitizers-selftest.sh)
+#   4b. every ctest call fails when it selects no test
+#      (hack/verify-ctest-selftest.sh)
 #   5. shellcheck over every hack/**/*.sh, and hack/linux-test.sh (the
 #      entry point on a Linux host) refuses on any other host
 #   6. every C and C++ file carries the Apache-2.0 header
@@ -183,7 +185,7 @@ build_and_test() {
 			san="WITHOUT sanitizers (waived)"
 		fi
 		cmake --build "$b" --parallel "$jobs"
-		ctest --test-dir "$b" --output-on-failure "$@"
+		ctest --test-dir "$b" --output-on-failure --no-tests=error "$@"
 		echo "    ok (unity $unity, $san)"
 	done
 }
@@ -295,7 +297,7 @@ if [ "$stage" = --stress ]; then
 	cmake -S . -B "$b" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DK3SM_SDK_SANITIZER=thread -DK3SM_SDK_STRESS=ON \
 		> "$tmp/configure.log" || { cat "$tmp/configure.log"; echo "FAIL: cmake configure (ThreadSanitizer)"; exit 1; }
 	cmake --build "$b" --parallel "$jobs" --target k3sm_sdk_threads_stress_test
-	if ! TSAN_OPTIONS="halt_on_error=1 ${TSAN_OPTIONS:-}" ctest --test-dir "$b" --output-on-failure -V -L stress \
+	if ! TSAN_OPTIONS="halt_on_error=1 ${TSAN_OPTIONS:-}" ctest --test-dir "$b" --output-on-failure --no-tests=error -V -L stress \
 		> "$tmp/stress.log" 2>&1; then
 		tail -n 60 "$tmp/stress.log"
 		echo "FAIL: the torn-read stress"
@@ -420,6 +422,9 @@ bash hack/verify-version.sh "$tmp/build-unity-OFF"
 
 echo "==> sanitizer requirement (hack/lib/sanitizers.sh)"
 bash hack/verify-sanitizers-selftest.sh
+
+echo "==> ctest runs at least one test per stage (--no-tests=error)"
+bash hack/verify-ctest-selftest.sh
 
 echo "==> shellcheck (hack/**/*.sh)"
 command -v shellcheck >/dev/null || { echo "FAIL: shellcheck is not installed"; exit 1; }
