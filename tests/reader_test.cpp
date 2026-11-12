@@ -22,7 +22,9 @@ limitations under the License.
 
 #include <k3sm/budget.hpp>
 
+#include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -31,9 +33,12 @@ limitations under the License.
 #include <optional>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "test_util.hpp"
@@ -735,6 +740,67 @@ void test_not_found() {
     K3SM_CHECK(!empty && empty.error() == sdk::error::truncated);
 }
 
+// open takes only a regular file and maps at most one page: a FIFO fails at
+// once instead of blocking until a writer appears, a directory fails, and a
+// file longer than a page reads as its first page.
+void test_open_rejects_fifo_and_caps_oversize_file() {
+    const std::string dir_path = std::string(K3SM_SDK_TEST_TMPDIR) + "/open-XXXXXX";
+    std::string dir = dir_path;
+    if (::mkdtemp(dir.data()) == nullptr) {
+        std::fprintf(stderr, "cannot create a directory under %s\n", K3SM_SDK_TEST_TMPDIR);
+        std::exit(2);
+    }
+
+    // A FIFO. The open runs on a helper thread so a regression that blocks
+    // fails the test after a bound instead of hanging the suite.
+    const std::string fifo = dir + "/page.fifo";
+    K3SM_CHECK_EQ(::mkfifo(fifo.c_str(), 0600), 0);
+    std::atomic<bool> done{false};
+    std::optional<sdk::result<sdk::budget_page>> fifo_page;
+    std::thread opener([&] {
+        fifo_page.emplace(sdk::budget_page::open(fifo.c_str()));
+        done.store(true, std::memory_order_release);
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!done.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    int release_fd = -1;
+    if (!done.load(std::memory_order_acquire)) {
+        k3sm_test::fail(__FILE__, __LINE__, "budget_page::open blocked on a FIFO");
+        release_fd = ::open(fifo.c_str(), O_RDWR | O_CLOEXEC);  // lets the blocked open return
+    }
+    opener.join();
+    if (release_fd >= 0) {
+        ::close(release_fd);
+    }
+    K3SM_CHECK(fifo_page.has_value() && !*fifo_page && fifo_page->error() == sdk::error::not_found);
+    K3SM_CHECK(fifo_page.has_value() && !*fifo_page && fifo_page->error().sys_errno() == EINVAL);
+    ::unlink(fifo.c_str());
+
+    // A directory.
+    const auto dir_page = sdk::budget_page::open(dir.c_str());
+    K3SM_CHECK(!dir_page && dir_page.error() == sdk::error::not_found);
+    K3SM_CHECK(!dir_page && dir_page.error().sys_errno() == EISDIR);
+    ::rmdir(dir.c_str());
+
+    // A valid page followed by padding maps one page.
+    const std::string darwin = read_file(fixture("darwin.v1.page"));
+    const std::string oversize_path = write_temp(darwin + std::string(3 * sdk::page_size, '\x5a'));
+    auto big = sdk::budget_page::open(oversize_path.c_str());
+    ::unlink(oversize_path.c_str());
+    K3SM_CHECK(big.has_value());
+    if (big) {
+        K3SM_CHECK_EQ(big->size(), sdk::page_size);
+        const auto got = big->read_at(observed);
+        K3SM_CHECK(got.has_value());
+        if (got) {
+            check_darwin_sample(*got);
+            K3SM_CHECK(!got->linux_.has_value());
+        }
+    }
+}
+
 // with_minor returns page with its abiMinor set to minor and its bodySize to
 // body.
 std::string with_minor(std::string page, std::uint16_t minor, std::uint32_t body) {
@@ -952,6 +1018,7 @@ int main() {
     reader_test::test_manifest_fixture_list();
     reader_test::test_negative_cases();
     reader_test::test_not_found();
+    reader_test::test_open_rejects_fifo_and_caps_oversize_file();
     reader_test::test_minor0_page();
     reader_test::test_minor_and_codes();
     reader_test::test_staleness();
