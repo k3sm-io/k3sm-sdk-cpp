@@ -53,12 +53,18 @@
 #               (K3SM_SDK_FUZZ_CXX, then $CXX, then Homebrew's llvm) and
 #               fails, naming how to get one, when none links
 #               -fsanitize=fuzzer.
+#   --compile-extras
+#               configure with K3SM_SDK_STRESS=ON and build (never run) the
+#               torn-read stress test and the benchmark, with warnings as
+#               errors and the sanitizers the toolchain supports, so they
+#               keep compiling between --stress runs
 #   --cshim     a placeholder until its part of the SDK lands
 #   --linux-vm  a placeholder: this gate does not run the Linux build; run
 #               hack/linux-test.sh on a Linux host instead
 #
 # The bare gate runs the unit tests in stage 1 and the notifier tests, which
-# spawn a process, through the --notifier stage after stage 9. It does not
+# spawn a process, through the --notifier stage after stage 9, then compiles
+# the stress test and the benchmark through --compile-extras. It does not
 # run --stress.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -72,8 +78,8 @@ case "$stage" in
 		echo "==> ${stage#--}"
 		echo "    the Linux build is not run by this gate; on a Linux host, run hack/linux-test.sh"
 		exit 0 ;;
-	""|--reader|--notifier|--stress) ;;
-	*) echo "usage: hack/ci.sh [--reader|--notifier|--cshim|--stress|--linux-vm]"; exit 2 ;;
+	""|--reader|--notifier|--compile-extras|--stress) ;;
+	*) echo "usage: hack/ci.sh [--reader|--notifier|--compile-extras|--cshim|--stress|--linux-vm]"; exit 2 ;;
 esac
 tmp="$(mktemp -d)"
 # Record this run in the gitignored .ci/last.json (read by the workspace hack/ci-last.sh), best effort,
@@ -171,6 +177,21 @@ if [ "$stage" = --notifier ]; then
 	echo "==> notifier tests (ctest -L notifier)"
 	build_and_test -L notifier
 	echo "k3sm-sdk-cpp ci --notifier: green"
+	ci_done=1
+	exit 0
+fi
+
+if [ "$stage" = --compile-extras ]; then
+	echo "==> stress test and benchmark, built only (K3SM_SDK_STRESS=ON)"
+	b="$tmp/build-extras"
+	cmake -S . -B "$b" -DCMAKE_BUILD_TYPE=Debug -DK3SM_SDK_STRESS=ON > "$tmp/configure.log" \
+		|| { cat "$tmp/configure.log"; echo "FAIL: cmake configure (K3SM_SDK_STRESS=ON)"; exit 1; }
+	for t in k3sm_sdk_threads_stress_test k3sm_sdk_page_bench; do
+		cmake --build "$b" --parallel "$jobs" --target "$t" > "$tmp/build-$t.log" 2>&1 \
+			|| { cat "$tmp/build-$t.log"; echo "FAIL: $t did not build"; exit 1; }
+		echo "    built $t"
+	done
+	echo "k3sm-sdk-cpp ci --compile-extras: green"
 	ci_done=1
 	exit 0
 fi
@@ -388,6 +409,9 @@ verify_fixtures
 
 echo "==> notifier (hack/ci.sh --notifier)"
 bash hack/ci.sh --notifier | sed 's/^/    /'
+
+echo "==> stress test and benchmark compile (hack/ci.sh --compile-extras)"
+bash hack/ci.sh --compile-extras | sed 's/^/    /'
 
 echo "==> placeholder stages (--cshim --linux-vm)"
 for st in --cshim --linux-vm; do

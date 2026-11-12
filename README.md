@@ -224,6 +224,7 @@ ctest --test-dir build --output-on-failure
 hack/ci.sh            # the full gate
 hack/ci.sh --reader   # the page reader's tests alone
 hack/ci.sh --notifier # the change notifier's tests alone
+hack/ci.sh --compile-extras # build (not run) the stress test and the benchmark
 hack/ci.sh --stress   # ThreadSanitizer stress, fuzz smoke, ASan/UBSan, bench
 ```
 
