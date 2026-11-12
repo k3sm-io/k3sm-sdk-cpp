@@ -17,7 +17,8 @@
 #   4. the version check: tag, CMake version and generated header agree
 #      (hack/verify-version.sh, after its self-test,
 #      hack/verify-version-selftest.sh)
-#   5. shellcheck over every hack/**/*.sh
+#   5. shellcheck over every hack/**/*.sh, and hack/linux-test.sh (the
+#      entry point on a Linux host) refuses on any other host
 #   6. every C and C++ file carries the Apache-2.0 header
 #   7. every file under .github/workflows/ is dormant (fully commented out)
 #   8. the dependency supply-chain check: its self-test, then the live tree
@@ -52,8 +53,9 @@
 #               (K3SM_SDK_FUZZ_CXX, then $CXX, then Homebrew's llvm) and
 #               fails, naming how to get one, when none links
 #               -fsanitize=fuzzer.
-#   --cshim, --linux-vm
-#               placeholders until their parts of the SDK land
+#   --cshim     a placeholder until its part of the SDK lands
+#   --linux-vm  a placeholder: this gate does not run the Linux build; run
+#               hack/linux-test.sh on a Linux host instead
 #
 # The bare gate runs the unit tests in stage 1 and the notifier tests, which
 # spawn a process, through the --notifier stage after stage 9. It does not
@@ -62,9 +64,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 stage="${1:-}"
 case "$stage" in
-	--cshim|--linux-vm)
+	--cshim)
 		echo "==> ${stage#--}"
 		echo "    not yet implemented"
+		exit 0 ;;
+	--linux-vm)
+		echo "==> ${stage#--}"
+		echo "    the Linux build is not run by this gate; on a Linux host, run hack/linux-test.sh"
 		exit 0 ;;
 	""|--reader|--notifier|--stress) ;;
 	*) echo "usage: hack/ci.sh [--reader|--notifier|--cshim|--stress|--linux-vm]"; exit 2 ;;
@@ -334,6 +340,21 @@ echo "==> shellcheck (hack/**/*.sh)"
 command -v shellcheck >/dev/null || { echo "FAIL: shellcheck is not installed"; exit 1; }
 find hack -name '*.sh' -print0 | xargs -0 shellcheck
 echo "    ok"
+
+echo "==> hack/linux-test.sh refuses on a non-Linux host"
+if [ "$(uname -s)" != Linux ]; then
+	set +e
+	bash hack/linux-test.sh > "$tmp/linux-test.out" 2> "$tmp/linux-test.err"
+	rc=$?
+	set -e
+	[ "$rc" = 2 ] || { cat "$tmp/linux-test.out" "$tmp/linux-test.err"; echo "FAIL: hack/linux-test.sh exited $rc, not 2"; exit 1; }
+	grep -qxF "linux-test: refused: not a Linux host ($(uname -s))" "$tmp/linux-test.err" \
+		|| { cat "$tmp/linux-test.err"; echo "FAIL: hack/linux-test.sh did not print its refusal"; exit 1; }
+	[ ! -s "$tmp/linux-test.out" ] || { cat "$tmp/linux-test.out"; echo "FAIL: hack/linux-test.sh wrote to stdout before refusing"; exit 1; }
+	echo "    ok"
+else
+	echo "    skipped (this is a Linux host)"
+fi
 
 echo "==> license headers (C and C++)"
 bash hack/verify-boilerplate.sh --self-test
