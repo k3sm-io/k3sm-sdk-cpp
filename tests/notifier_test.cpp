@@ -928,6 +928,70 @@ void test_wait_slice_is_clamped() {
     K3SM_CHECK(access::slice_for(ns(9'223'372'036'854'775'807LL)) == ns(86'400'000'000'000LL));
 }
 
+// test_move_assign_and_failed_doorbells_leak_no_descriptor: move-assigning a
+// notifier with a doorbell over another one closes the old doorbell, and a
+// doorbell that cannot be opened (a missing path; on Darwin a directory)
+// leaves the notifier on the address wait and keeps no descriptor, however
+// often either is repeated.
+void test_move_assign_and_failed_doorbells_leak_no_descriptor() {
+    const std::string path = tmp_path("fdleak.page");
+    const std::string bell = tmp_path("fdleak.bell");
+    const std::string dirbell = tmp_path("fdleak.dirbell");
+    const remove_on_exit cleanup{path, bell, dirbell};
+    K3SM_CHECK(write_page(path));
+    const int bfd = ::open(bell.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    K3SM_CHECK(bfd >= 0);
+    if (bfd >= 0) {
+        ::close(bfd);
+    }
+    ::rmdir(dirbell.c_str());
+    ::unlink(dirbell.c_str());
+    K3SM_CHECK_EQ(::mkdir(dirbell.c_str(), 0700), 0);
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        return;
+    }
+
+    const auto assign_round = [&]() {
+        sdk::change_notifier a(*page, bell.c_str(), sdk::wake_source::doorbell);
+        sdk::change_notifier b(*page, bell.c_str(), sdk::wake_source::doorbell);
+#if defined(__APPLE__) || defined(__linux__)
+        K3SM_CHECK(a.source() == sdk::wake_source::doorbell);
+        K3SM_CHECK(b.source() == sdk::wake_source::doorbell);
+#endif
+        b = std::move(a);
+#if defined(__APPLE__) || defined(__linux__)
+        K3SM_CHECK(b.source() == sdk::wake_source::doorbell);
+#endif
+        K3SM_CHECK(a.source() == sdk::wake_source::none);
+    };
+    const auto fail_round = [&]() {
+        const sdk::change_notifier m(*page, "/nonexistent/k3sm/budget.bell", sdk::wake_source::doorbell);
+#if defined(__APPLE__) || defined(__linux__)
+        K3SM_CHECK(m.source() == sdk::wake_source::address);
+#endif
+#if defined(__APPLE__)
+        const sdk::change_notifier d(*page, dirbell.c_str(), sdk::wake_source::doorbell);
+        K3SM_CHECK(d.source() == sdk::wake_source::address);
+#endif
+    };
+
+    assign_round();
+    const int before_assign = k3sm_test::open_fd_count();
+    for (int i = 0; i < 300; ++i) {
+        assign_round();
+    }
+    K3SM_CHECK_EQ(k3sm_test::open_fd_count(), before_assign);
+
+    fail_round();
+    const int before_fail = k3sm_test::open_fd_count();
+    for (int i = 0; i < 300; ++i) {
+        fail_round();
+    }
+    K3SM_CHECK_EQ(k3sm_test::open_fd_count(), before_fail);
+}
+
 }  // namespace notifier_test
 
 int main(int argc, char** argv) {
@@ -950,6 +1014,7 @@ int main(int argc, char** argv) {
     notifier_test::test_preferred_doorbell_still_sees_a_bump_without_a_ring();
     notifier_test::test_wait_caps_are_pinned();
     notifier_test::test_wait_slice_is_clamped();
+    notifier_test::test_move_assign_and_failed_doorbells_leak_no_descriptor();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "notifier_test: %d failure(s)\n", k3sm_test::failures());
         return 1;

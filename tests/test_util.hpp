@@ -31,6 +31,8 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>
+
 #ifndef K3SM_SDK_FIXTURE_DIR
 #error "K3SM_SDK_FIXTURE_DIR must name tests/fixtures/page"
 #endif
@@ -56,6 +58,19 @@ inline void fail(const char* file, int line, const std::string& what) {
     do {                                                                   \
         if (!((a) == (b))) ::k3sm_test::fail(__FILE__, __LINE__, #a " == " #b); \
     } while (0)
+
+// open_fd_count returns how many of the descriptors 0 to 4095 are open,
+// probed with F_GETFD so the count opens nothing of its own. A test compares
+// two counts to show that a code path leaks no descriptor.
+inline int open_fd_count() {
+    int n = 0;
+    for (int fd = 0; fd < 4096; ++fd) {
+        if (::fcntl(fd, F_GETFD) != -1) {
+            ++n;
+        }
+    }
+    return n;
+}
 
 // fixture returns the path of a vendored fixture file.
 inline std::string fixture(std::string_view name) {
