@@ -1250,6 +1250,112 @@ void test_open_short_file_is_truncated() {
     }
 }
 
+// test_page_shorter_than_header_is_truncated: a non-empty file shorter than
+// the 64-byte header line opens (open fails only on an empty file) and reads
+// as error::truncated. Each length is a prefix of the darwin golden, so the
+// magic is intact; the 8-byte prefix has the magic and nothing after it, so
+// only the size guard ahead of the header check can call it truncated.
+void test_page_shorter_than_header_is_truncated() {
+    const std::string golden = read_file(fixture("darwin.v1.page"));
+    for (const std::size_t n : {std::size_t{8}, std::size_t{23}, std::size_t{63}}) {
+        const std::string path = write_temp(golden.substr(0, n));
+        auto page = sdk::budget_page::open(path.c_str());
+        ::unlink(path.c_str());
+        K3SM_CHECK(page.has_value());
+        if (!page) {
+            continue;
+        }
+        K3SM_CHECK_EQ(page->size(), n);
+        const auto r = page->read_at(observed);
+        if (r || r.error() != sdk::error::truncated) {
+            k3sm_test::fail(__FILE__, __LINE__,
+                            "a " + std::to_string(n) + "-byte page: got " +
+                                (r ? std::string("ok") : std::string(r.error().name())) + ", want truncated");
+        }
+    }
+}
+
+// test_lone_linux_word_makes_linux_block: a darwin page carries the Linux
+// block as soon as any one Linux word is present. The darwin golden holds
+// none; setting only the first scanned word (the first PSI value) or only
+// the last (memory.events oom_kill) gives a Linux block, which pins both
+// ends of the scan.
+void test_lone_linux_word_makes_linux_block() {
+    namespace o = sdk::page_offset;
+    const std::string golden = read_file(fixture("darwin.v1.page"));
+    const auto plain = read_bytes(golden);
+    K3SM_CHECK(plain.has_value());
+    if (plain) {
+        K3SM_CHECK(plain->platform == sdk::platform::darwin);
+        K3SM_CHECK(!plain->linux_.has_value());
+    }
+    for (std::size_t offset = o::linux_psi; offset <= o::linux_memory_events_oom_kill; offset += 8) {
+        K3SM_CHECK_EQ(static_cast<std::int64_t>(get_u64(golden, offset)), sdk::page_absent);
+    }
+
+    std::string first = golden;
+    put_u64(first, o::linux_psi, 120);
+    const auto f = read_bytes(first);
+    K3SM_CHECK(f.has_value());
+    if (f) {
+        K3SM_CHECK(f->linux_.has_value());
+        if (f->linux_) {
+            K3SM_CHECK_EQ(f->linux_->psi.cpu.some.avg10_permille, 120);
+        }
+    }
+
+    std::string last = golden;
+    put_u64(last, o::linux_memory_events_oom_kill, 4);
+    const auto l = read_bytes(last);
+    K3SM_CHECK(l.has_value());
+    if (l) {
+        K3SM_CHECK(l->linux_.has_value());
+        if (l->linux_) {
+            K3SM_CHECK_EQ(l->linux_->memory_events.oom_kill, 4);
+        }
+    }
+}
+
+// test_find_signal: on the darwin golden, find_signal returns nullptr for
+// the unset id and for an id the page does not hold, and the slot of an id
+// it holds. The golden holds all seven ids, so the absent case clears the
+// last slot (pid_available).
+void test_find_signal() {
+    namespace o = sdk::page_offset;
+    using sdk::signal_id;
+    const auto r = open_read(fixture("darwin.v1.page"));
+    K3SM_CHECK(r.has_value());
+    if (!r) {
+        return;
+    }
+    K3SM_CHECK(r->find_signal(signal_id::unset) == nullptr);
+    for (const signal_id id : {signal_id::memory_available, signal_id::nodefs_available, signal_id::pid_available}) {
+        const sdk::signal_record* g = r->find_signal(id);
+        K3SM_CHECK(g != nullptr);
+        if (g != nullptr) {
+            K3SM_CHECK(g->id == id);
+            K3SM_CHECK(g >= r->signals.data() && g < r->signals.data() + r->signal_count);
+        }
+    }
+    const sdk::signal_record* pid = r->find_signal(signal_id::pid_available);
+    K3SM_CHECK(pid != nullptr && pid->value == 9000);
+
+    std::string page = read_file(fixture("darwin.v1.page"));
+    const std::size_t last = o::signal_slot(6);
+    for (std::size_t i = 0; i < o::signal_stride; i += 8) {
+        put_u64(page, last + i, 0);
+    }
+    const auto a = read_bytes(page);
+    K3SM_CHECK(a.has_value());
+    if (a) {
+        K3SM_CHECK_EQ(a->signal_count, 6u);
+        K3SM_CHECK(a->find_signal(signal_id::pid_available) == nullptr);
+        K3SM_CHECK(a->find_signal(signal_id::unset) == nullptr);
+        const sdk::signal_record* m = a->find_signal(signal_id::memory_available);
+        K3SM_CHECK(m != nullptr && m->id == signal_id::memory_available);
+    }
+}
+
 // remove_on_exit removes each named file, link or empty directory when the
 // test returns on any path, including an early return after a failed check.
 struct remove_on_exit {
@@ -1497,6 +1603,9 @@ int main() {
     reader_test::test_bytes_until_nothing_to_measure();
     reader_test::test_batch_slots_nonpositive_recommendation();
     reader_test::test_open_short_file_is_truncated();
+    reader_test::test_page_shorter_than_header_is_truncated();
+    reader_test::test_lone_linux_word_makes_linux_block();
+    reader_test::test_find_signal();
     reader_test::test_corrupt_beats_stale();
     reader_test::test_open_follows_symlink();
     reader_test::test_open_carries_eacces_and_enotdir();
