@@ -60,8 +60,9 @@ public:
         // platform or level outside its table, too many slots, a platform
         // block that does not match the platform).
         invalid_snapshot = 8,
-        // invalid_argument: a writer argument is unusable (a buffer shorter
-        // than page_size, a lock file inside the page's directory).
+        // invalid_argument: a writer argument is unusable (a null buffer or a
+        // buffer shorter than page_size, a null page or lock path, a lock file
+        // inside the page's directory).
         invalid_argument = 9,
         // writer_busy: another writer holds the page's writer lock.
         writer_busy = 10,
