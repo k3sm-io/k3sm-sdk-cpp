@@ -27,6 +27,11 @@ if [ "$uname_s" != Linux ]; then
 fi
 
 cd "$(dirname "$0")/.."
+# The permission-denied cases of the reader and writer tests skip as root, so
+# a root run would go green without them: refuse it (hack/lib/nonroot.sh).
+# shellcheck source=hack/lib/nonroot.sh
+. hack/lib/nonroot.sh
+require_non_root || exit 1
 # shellcheck source=hack/lib/sanitizers.sh
 . hack/lib/sanitizers.sh
 
