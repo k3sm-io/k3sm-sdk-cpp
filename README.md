@@ -140,7 +140,9 @@ std::int64_t size_batch(std::int64_t cap, std::int64_t slot_bytes) {
   the word, so nothing changes). One wait is cut into slices of at most 24
   hours. When the address wait fails for good, the notifier falls back to the
   doorbell if one is open, and only without a doorbell does it sleep and poll
-  the word, in steps of at most 1 millisecond. On macOS the address wait needs macOS 14.4 or later at run time; on an older system the notifier starts on the doorbell if one is open, and otherwise polls.
+  the word, in steps of at most 1 millisecond. On macOS the address wait needs
+  macOS 14.4 or later at run time; on an older system the notifier starts on
+  the doorbell if one is open, and otherwise polls.
 
   A third argument, `change_notifier(page, doorbell_path, prefer)`, takes a
   `wake_source`: `wake_source::doorbell` waits on the doorbell from the start
