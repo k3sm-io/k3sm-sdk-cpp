@@ -1039,12 +1039,12 @@ void test_move_construct_keeps_the_doorbell() {
         // Destroying the moved-from notifier must not close what b now holds.
         a.reset();
 
+        const std::uint64_t before = b.epoch();
         std::thread bumper([&rw] {
             std::this_thread::sleep_for(20ms);
             rw.bump();
             rw.wake();
         });
-        const std::uint64_t before = b.epoch();
         K3SM_CHECK(b.wait(2s));
         bumper.join();
         K3SM_CHECK_EQ(b.epoch(), before + 1);
