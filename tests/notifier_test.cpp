@@ -33,6 +33,7 @@ limitations under the License.
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1002,6 +1003,101 @@ void test_move_assign_and_failed_doorbells_leak_no_descriptor() {
     K3SM_CHECK_EQ(k3sm_test::open_fd_count(), before_fail);
 }
 
+// test_move_construct_keeps_the_doorbell: move-constructing a notifier that
+// holds a doorbell hands the doorbell to the new notifier, leaves the old one
+// with no source, keeps the new one waiting on the doorbell after the old one
+// is destroyed, and keeps no descriptor once both are gone.
+void test_move_construct_keeps_the_doorbell() {
+#if defined(__APPLE__) || defined(__linux__)
+    const std::string path = tmp_path("movector.page");
+    const std::string bell = tmp_path("movector.bell");
+    const remove_on_exit cleanup{path, bell};
+    K3SM_CHECK(write_page(path));
+    const int bfd = ::open(bell.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    K3SM_CHECK(bfd >= 0);
+    if (bfd >= 0) {
+        ::close(bfd);
+    }
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        return;
+    }
+    rw_page rw(path);
+    K3SM_CHECK(rw.base != nullptr);
+    if (rw.base == nullptr) {
+        return;
+    }
+    const int base_fds = k3sm_test::open_fd_count();
+    {
+        auto a = std::make_unique<sdk::change_notifier>(*page, bell.c_str(), sdk::wake_source::doorbell);
+        const sdk::wake_source original = a->source();
+        K3SM_CHECK(original == sdk::wake_source::doorbell);
+        sdk::change_notifier b(std::move(*a));
+        K3SM_CHECK(b.source() == original);
+        K3SM_CHECK(a->source() == sdk::wake_source::none);
+        // Destroying the moved-from notifier must not close what b now holds.
+        a.reset();
+
+        std::thread bumper([&rw] {
+            std::this_thread::sleep_for(20ms);
+            rw.bump();
+            rw.wake();
+        });
+        const std::uint64_t before = b.epoch();
+        K3SM_CHECK(b.wait(2s));
+        bumper.join();
+        K3SM_CHECK_EQ(b.epoch(), before + 1);
+        K3SM_CHECK(b.source() == original);
+    }
+    K3SM_CHECK_EQ(k3sm_test::open_fd_count(), base_fds);
+#endif
+}
+
+// test_doorbell_character_device_is_ignored: a doorbell path that names a
+// character device (/dev/null) is not a doorbell on Darwin, like a FIFO or a
+// directory. The notifier keeps the word, still reports a bump, and building
+// and destroying such a notifier keeps no descriptor.
+void test_doorbell_character_device_is_ignored() {
+#if defined(__APPLE__)
+    const std::string path = tmp_path("chrbell.page");
+    const remove_on_exit cleanup{path};
+    K3SM_CHECK(write_page(path));
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        return;
+    }
+    rw_page rw(path);
+    K3SM_CHECK(rw.base != nullptr);
+    if (rw.base == nullptr) {
+        return;
+    }
+    const int base_fds = k3sm_test::open_fd_count();
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        sdk::change_notifier n(*page, "/dev/null", sdk::wake_source::doorbell);
+        K3SM_CHECK(std::chrono::steady_clock::now() - t0 < 2s);
+        K3SM_CHECK(n.source() == sdk::wake_source::address);
+        K3SM_CHECK_EQ(k3sm_test::open_fd_count(), base_fds);
+        std::thread bumper([&rw] {
+            std::this_thread::sleep_for(20ms);
+            rw.bump();
+            rw.wake();
+        });
+        const std::uint64_t before = n.epoch();
+        K3SM_CHECK(guarded_wait(n, rw, 2s, __LINE__));
+        bumper.join();
+        K3SM_CHECK_EQ(n.epoch(), before + 1);
+    }
+    for (int i = 0; i < 100; ++i) {
+        const sdk::change_notifier m(*page, "/dev/null", sdk::wake_source::doorbell);
+        K3SM_CHECK(m.source() == sdk::wake_source::address);
+    }
+    K3SM_CHECK_EQ(k3sm_test::open_fd_count(), base_fds);
+#endif
+}
+
 // test_kept_doorbell_with_the_word_as_primary: given a doorbell that opens
 // but no preference for it (the default, or any value but doorbell), the
 // notifier keeps the word as its wake source, a bump with a wake is reported,
@@ -1130,6 +1226,8 @@ int main(int argc, char** argv) {
     notifier_test::test_wait_caps_are_pinned();
     notifier_test::test_wait_slice_is_clamped();
     notifier_test::test_move_assign_and_failed_doorbells_leak_no_descriptor();
+    notifier_test::test_move_construct_keeps_the_doorbell();
+    notifier_test::test_doorbell_character_device_is_ignored();
     notifier_test::test_kept_doorbell_with_the_word_as_primary();
     notifier_test::test_short_page_given_a_doorbell();
     if (k3sm_test::failures() != 0) {
