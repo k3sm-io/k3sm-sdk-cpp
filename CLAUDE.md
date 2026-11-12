@@ -25,7 +25,9 @@ hack/ci.sh      # the full gate
 ```
 - `hack/ci.sh` is the gate: configure, build and ctest as separate sources and as a unity build;
   install and consume through `find_package(k3sm-sdk CONFIG)`; consume through FetchContent with no
-  options; the version check; shellcheck; license headers; dormant workflows; the dependency check.
+  options; the version check; shellcheck; license headers; dormant workflows; the dependency check; and
+  `--compile-extras`, which builds (never runs) the stress test (RelWithDebInfo, ThreadSanitizer)
+  and the benchmark (Release, no sanitizers), the configurations `--stress` runs them in.
 - **No third-party dependencies, ever.** `hack/verify-deps.sh` (run by `ci.sh`) fails on any
   `FetchContent_Declare`, `ExternalProject_Add`, CPM call or git submodule not listed in
   `hack/deps.allow` with an exact commit sha, and the allow file is empty.
