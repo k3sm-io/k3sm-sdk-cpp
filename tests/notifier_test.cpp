@@ -70,6 +70,9 @@ namespace k3sm::sdk {
 // no kqueue) while the destructor's close stays the close of an fd the
 // notifier owns.
 struct change_notifier_test_access {
+    static constexpr std::chrono::nanoseconds max_slice() { return change_notifier::max_slice; }
+    static constexpr std::chrono::nanoseconds sleep_step() { return change_notifier::sleep_step; }
+
     static bool break_queue(change_notifier& n) {
         if (n.queue_fd_ < 0) {
             return false;
@@ -840,6 +843,16 @@ void test_doorbell_wait_failure_falls_back_to_sleep() {
 #endif
 }
 
+// test_wait_caps_are_pinned pins the two numbers a wait is built from: the
+// longest single block (a day) and the sleep fallback's poll step (1 ms).
+void test_wait_caps_are_pinned() {
+    using access = sdk::change_notifier_test_access;
+    K3SM_CHECK(access::max_slice() == std::chrono::hours(24));
+    K3SM_CHECK(access::max_slice() == std::chrono::nanoseconds(86'400'000'000'000LL));
+    K3SM_CHECK(access::sleep_step() == std::chrono::milliseconds(1));
+    K3SM_CHECK(access::sleep_step() == std::chrono::nanoseconds(1'000'000));
+}
+
 }  // namespace notifier_test
 
 int main(int argc, char** argv) {
@@ -859,6 +872,7 @@ int main(int argc, char** argv) {
     notifier_test::test_doorbell_fifo_does_not_block_construction();
     notifier_test::test_doorbell_directory_is_ignored();
     notifier_test::test_doorbell_wait_failure_falls_back_to_sleep();
+    notifier_test::test_wait_caps_are_pinned();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "notifier_test: %d failure(s)\n", k3sm_test::failures());
         return 1;
