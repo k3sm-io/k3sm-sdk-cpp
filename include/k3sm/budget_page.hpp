@@ -419,11 +419,14 @@ inline std::int64_t now_unix_seconds() noexcept {
 class budget_page {
 public:
     // open maps the page at path read-only. It fails with error::not_found
-    // (carrying errno) when the file cannot be opened, stat'ed or mapped, and
-    // with error::truncated when it is empty. Every other check runs on each
-    // read, because the writer may take the page over between reads.
+    // (carrying errno) when the file cannot be opened, stat'ed or mapped, or
+    // is not a regular file (EISDIR for a directory, EINVAL otherwise), and
+    // with error::truncated when it is empty. It opens without blocking, so a
+    // FIFO at path fails at once, and maps at most page_size bytes of a
+    // longer file. Every other check runs on each read, because the writer
+    // may take the page over between reads.
     static result<budget_page> open(const char* path) noexcept {
-        const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+        const int fd = ::open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) {
             return error(error::not_found, errno);
         }
@@ -433,11 +436,16 @@ public:
             ::close(fd);
             return error(error::not_found, e);
         }
+        if (!S_ISREG(st.st_mode)) {
+            ::close(fd);
+            return error(error::not_found, S_ISDIR(st.st_mode) ? EISDIR : EINVAL);
+        }
         if (st.st_size <= 0) {
             ::close(fd);
             return error::truncated;
         }
-        const auto bytes = static_cast<std::size_t>(st.st_size);
+        const auto file_bytes = static_cast<std::uint64_t>(st.st_size);
+        const auto bytes = file_bytes < page_size ? static_cast<std::size_t>(file_bytes) : page_size;
         void* base = ::mmap(nullptr, bytes, PROT_READ, MAP_SHARED, fd, 0);
         const int e = errno;
         ::close(fd);  // the mapping keeps the file
