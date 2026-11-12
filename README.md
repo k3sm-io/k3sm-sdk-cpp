@@ -178,7 +178,7 @@ the page path, a lock file path and, optionally, a doorbell path, then publish a
 ```cpp
 auto w = sdk::page_writer::open("/run/app/budget.v1.page", "/run/app.lock",
                                 "/run/app/budget.doorbell");
-if (!w) return w.error().sys_errno();  // w.error().name() says which error
+if (!w) return 1;                      // w.error().name() says which error
 auto seq = w->publish(snap);           // the new, even seq, or an error
 ```
 
@@ -191,12 +191,15 @@ auto seq = w->publish(snap);           // the new, even seq, or an error
   directory. There is one writer per page.
 - `publish` refuses a snapshot the layout cannot carry before it stores
   anything. It bumps `notifyEpoch`, wakes the waiters and writes the doorbell
-  only when `notify_due` says the level, `admit`, the generation or a threshold
-  changed. `bump_generation()` adds one to the generation on a policy change.
+  on the first publish, and after that only when `notify_due` says the level,
+  `admit`, the generation or a threshold changed. `bump_generation()` adds one
+  to the generation on a policy change.
 - The writer-side error kinds are `writer_busy` (another writer holds the lock),
-  `invalid_argument` (a lock file in the page's directory, or a buffer shorter
-  than `page_size`), `invalid_snapshot`, `node_name_too_long` and `io`, which
+  `invalid_argument` (from `open`: a null path, or a lock file in the page's
+  directory), `invalid_snapshot`, `node_name_too_long` and `io`, which
   carries the `errno` of the failing call in `sys_errno()`.
+- A `page_writer` is move-only and not safe for concurrent use from several
+  threads.
 
 ## Build and test
 
