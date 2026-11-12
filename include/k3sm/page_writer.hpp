@@ -398,6 +398,13 @@ inline std::array<std::size_t, header_words> resume_store_order(bool shrinks) no
     return order;
 }
 
+// resume_shrinks reports whether a resume over a header whose bodySize word
+// is body_size_word shrinks the body: the existing bodySize (the low 32 bits
+// of the word) is larger than this minor's. It picks resume_store_order.
+inline bool resume_shrinks(std::uint64_t body_size_word) noexcept {
+    return static_cast<std::uint32_t>(body_size_word) > page_body_size;
+}
+
 }  // namespace detail
 
 // encode_page writes the page of s into dst[0, page_size), deterministically,
@@ -580,7 +587,7 @@ private:
         if (magic == detail::page_magic_word() &&
             static_cast<std::uint16_t>(versions) == page_abi_major &&
             static_cast<std::uint32_t>(versions >> 32) == page_header_size) {
-            shrinks = static_cast<std::uint32_t>(detail::load(base_, off::body_size)) > page_body_size;
+            shrinks = detail::resume_shrinks(detail::load(base_, off::body_size));
             seq_ = detail::load(base_, off::seq);
             epoch_ = detail::load(base_, off::notify_epoch);
             previous = static_cast<std::int64_t>(detail::load(base_, off::generation));

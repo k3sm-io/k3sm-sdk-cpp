@@ -542,7 +542,7 @@ void test_resume_header_store_order() {
         put_u64(page, sdk::page_offset::body_size, c.body);
 
         // Apply the resume's stores one at a time, reading the header after each.
-        const bool shrinks = c.body > sdk::page_body_size;
+        const bool shrinks = sdk::detail::resume_shrinks(c.body);
         int stores = 0;
         for (const std::size_t o : sdk::detail::resume_store_order(shrinks)) {
             put_u64(page, o, get_u64(fresh, o));
@@ -571,6 +571,33 @@ void test_resume_header_store_order() {
             seen[o / 8] = true;
         }
         K3SM_CHECK_EQ(order.back(), sdk::page_offset::magic);
+    }
+    // The flag resume derives from the existing bodySize, and the order it picks:
+    // a smaller or equal body stores the bodySize word first, a larger one the
+    // minor word first. Only the low 32 bits of the word are the bodySize.
+    constexpr std::size_t minor_word = sdk::page_offset::abi_minor & ~std::size_t{7};
+    constexpr std::size_t size_word = sdk::page_offset::body_size & ~std::size_t{7};
+    constexpr std::size_t first = sdk::detail::header_words - 3;
+    struct shrink_case {
+        const char* name;
+        std::uint64_t word;
+        bool shrinks;
+    };
+    const shrink_case shrink_cases[] = {
+        {"smaller body", sdk::page_body_size - 8, false},
+        {"equal body", sdk::page_body_size, false},
+        {"larger body", sdk::page_body_size + 8, true},
+        {"high bits ignored", std::uint64_t{1} << 32 | sdk::page_body_size, false},
+    };
+    for (const shrink_case& c : shrink_cases) {
+        const bool shrinks = sdk::detail::resume_shrinks(c.word);
+        if (shrinks != c.shrinks) {
+            std::fprintf(stderr, "%s: resume_shrinks is %d, want %d\n", c.name, shrinks, c.shrinks);
+            K3SM_CHECK(false);
+        }
+        const auto order = sdk::detail::resume_store_order(shrinks);
+        K3SM_CHECK_EQ(order[first], c.shrinks ? minor_word : size_word);
+        K3SM_CHECK_EQ(order[first + 1], c.shrinks ? size_word : minor_word);
     }
 }
 
