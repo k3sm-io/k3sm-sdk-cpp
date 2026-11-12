@@ -77,6 +77,10 @@ enum class wake_source : std::uint8_t {
     sleep = 3,
 };
 
+// change_notifier_test_access is declared for the SDK's own tests, which
+// alone define it; the library never does.
+struct change_notifier_test_access;
+
 // change_notifier reports changes of one page's notifyEpoch word. It
 // remembers the last epoch it reported (at first the epoch at
 // construction, or the one given to seed) and reports a change once. The
@@ -208,6 +212,8 @@ public:
     wake_source source() const noexcept { return source_; }
 
 private:
+    friend struct change_notifier_test_access;
+
     // max_slice is the longest single block inside wait; a longer timeout
     // is waited out in several slices.
     static constexpr std::chrono::nanoseconds max_slice = std::chrono::hours(24);
