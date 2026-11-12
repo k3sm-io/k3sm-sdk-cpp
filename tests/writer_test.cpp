@@ -571,6 +571,122 @@ void test_open_fails_after_lock() {
     K3SM_CHECK(::stat(bell.c_str(), &st) == 0 && st.st_size >= 1);
 }
 
+// open refuses a null page or lock path, and a page or lock path whose
+// directory does not exist fails with io and ENOENT. None of the failing
+// opens creates the page or the lock file.
+void test_open_argument_and_path_errors() {
+    const std::string page = page_path("openerr.page");
+    const std::string lock = lock_path("openerr.lock");
+    const unlinker guard{page, lock};
+    struct stat st {};
+
+    auto no_page = sdk::page_writer::open(nullptr, lock.c_str());
+    K3SM_CHECK(!no_page && no_page.error() == sdk::error::invalid_argument);
+    auto no_lock = sdk::page_writer::open(page.c_str(), nullptr);
+    K3SM_CHECK(!no_lock && no_lock.error() == sdk::error::invalid_argument);
+
+    const std::string missing_lock = lock_path("missing-dir/openerr.lock");
+    auto lock_dir_missing = sdk::page_writer::open(page.c_str(), missing_lock.c_str());
+    K3SM_CHECK(!lock_dir_missing && lock_dir_missing.error() == sdk::error::io);
+    if (!lock_dir_missing) {
+        K3SM_CHECK_EQ(lock_dir_missing.error().sys_errno(), ENOENT);
+    }
+    const std::string missing_page = page_path("missing-dir/openerr.page");
+    auto page_dir_missing = sdk::page_writer::open(missing_page.c_str(), lock.c_str());
+    K3SM_CHECK(!page_dir_missing && page_dir_missing.error() == sdk::error::io);
+    if (!page_dir_missing) {
+        K3SM_CHECK_EQ(page_dir_missing.error().sys_errno(), ENOENT);
+    }
+
+    K3SM_CHECK(::stat(page.c_str(), &st) != 0 && errno == ENOENT);
+    K3SM_CHECK(::stat(lock.c_str(), &st) != 0 && errno == ENOENT);
+}
+
+// Move assignment releases the target's own lock and mapping and takes the
+// source's: the target's old page opens again, the source's page stays held,
+// and the target carries the source's seq and generation. A self-move is a
+// no-op.
+void test_move_assignment() {
+    const std::string page1 = page_path("move1.page");
+    const std::string lock1 = lock_path("move1.lock");
+    const std::string page2 = page_path("move2.page");
+    const std::string lock2 = lock_path("move2.lock");
+    const unlinker guard{page1, lock1, page2, lock2};
+    const sdk::snapshot darwin = golden("darwin.v1.page");
+
+    auto a = sdk::page_writer::open(page1.c_str(), lock1.c_str());
+    auto b = sdk::page_writer::open(page2.c_str(), lock2.c_str());
+    K3SM_CHECK(a.has_value() && b.has_value());
+    if (!a || !b) {
+        return;
+    }
+    K3SM_CHECK(a->publish(darwin).has_value());
+    K3SM_CHECK(b->publish(darwin).has_value());
+    b->bump_generation();
+    K3SM_CHECK(b->publish(darwin).has_value());
+    const std::uint64_t b_seq = b->seq();
+    const std::int64_t b_generation = b->generation();
+    K3SM_CHECK(b_seq != a->seq() && b_generation != a->generation());
+
+    *a = std::move(*b);
+    {
+        auto reopened = sdk::page_writer::open(page1.c_str(), lock1.c_str());
+        K3SM_CHECK(reopened.has_value());
+    }
+    auto busy = sdk::page_writer::open(page2.c_str(), lock2.c_str());
+    K3SM_CHECK(!busy && busy.error() == sdk::error::writer_busy);
+    K3SM_CHECK_EQ(a->seq(), b_seq);
+    K3SM_CHECK_EQ(a->generation(), b_generation);
+
+    // The moved-to writer publishes into the source's page.
+    K3SM_CHECK(a->publish(darwin).has_value());
+    K3SM_CHECK_EQ(get_u64(k3sm_test::read_file(page2), sdk::page_offset::seq), b_seq + 2);
+
+    // A self-move keeps the lock, the mapping and the counters.
+    sdk::page_writer& same = *a;
+    *a = std::move(same);
+    auto still_busy = sdk::page_writer::open(page2.c_str(), lock2.c_str());
+    K3SM_CHECK(!still_busy && still_busy.error() == sdk::error::writer_busy);
+    K3SM_CHECK_EQ(a->seq(), b_seq + 2);
+    K3SM_CHECK(a->publish(darwin).has_value());
+    K3SM_CHECK_EQ(get_u64(k3sm_test::read_file(page2), sdk::page_offset::seq), b_seq + 4);
+}
+
+// A publication that is not due leaves the doorbell untouched; a due one
+// writes it.
+void test_doorbell_silent_when_not_due() {
+    const std::string page = page_path("quietbell.page");
+    const std::string lock = lock_path("quietbell.lock");
+    const std::string bell = page_path("quietbell.bell");
+    const unlinker guard{page, lock, bell};
+    auto w = sdk::page_writer::open(page.c_str(), lock.c_str(), bell.c_str());
+    K3SM_CHECK(w.has_value());
+    if (!w) {
+        return;
+    }
+    const sdk::snapshot darwin = golden("darwin.v1.page");
+    K3SM_CHECK(w->publish(darwin).has_value());
+    struct stat st {};
+    K3SM_CHECK(::stat(bell.c_str(), &st) == 0 && st.st_size >= 1);
+    K3SM_CHECK(::truncate(bell.c_str(), 0) == 0);
+    const std::uint64_t e0 = w->epoch();
+
+    sdk::snapshot quiet = darwin;
+    quiet.signals[0].value = 5;
+    K3SM_CHECK(!sdk::notify_due(&darwin, quiet));
+    K3SM_CHECK(w->publish(quiet).has_value());
+    K3SM_CHECK(::stat(bell.c_str(), &st) == 0);
+    K3SM_CHECK_EQ(static_cast<long long>(st.st_size), 0LL);
+    K3SM_CHECK_EQ(w->epoch(), e0);
+
+    sdk::snapshot loud = quiet;
+    loud.level = sdk::level::warn;
+    K3SM_CHECK(sdk::notify_due(&quiet, loud));
+    K3SM_CHECK(w->publish(loud).has_value());
+    K3SM_CHECK(::stat(bell.c_str(), &st) == 0 && st.st_size >= 1);
+    K3SM_CHECK_EQ(w->epoch(), e0 + 1);
+}
+
 // A writer that died mid-write left seq odd: the next writer moves past it.
 void test_resume_odd_seq() {
     const std::string page = page_path("odd.page");
@@ -892,6 +1008,9 @@ int main() {
     writer_test::test_live_page();
     writer_test::test_lock_left_by_dead_writer();
     writer_test::test_open_fails_after_lock();
+    writer_test::test_open_argument_and_path_errors();
+    writer_test::test_move_assignment();
+    writer_test::test_doorbell_silent_when_not_due();
     writer_test::test_resume_odd_seq();
     writer_test::test_resume_header_store_order();
     writer_test::test_resume_rollback_page();
