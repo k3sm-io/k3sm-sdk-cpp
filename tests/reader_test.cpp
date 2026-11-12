@@ -39,6 +39,7 @@ limitations under the License.
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -1200,6 +1201,85 @@ void test_result_and_move() {
     }
 }
 
+// test_move_assign_and_failed_opens_leak_nothing: move-assigning a live page
+// over another live page unmaps the old mapping and leaves the moved-from
+// page empty, and neither that nor a failed open (an empty file, a missing
+// file, a directory) or a page that opens but fails to read (a short page, a
+// bad magic) keeps a descriptor open, however often it is repeated.
+void test_move_assign_and_failed_opens_leak_nothing() {
+    const std::string page_bytes = read_file(fixture("darwin.v1.page"));
+    const std::string dir = make_temp_dir();
+    const std::string good = dir + "/good.page";
+    const std::string empty = dir + "/empty.page";
+    const std::string short_page = dir + "/short.page";
+    const std::string bad_magic = dir + "/magic.page";
+    const std::string missing = dir + "/missing.page";
+    const remove_on_exit cleanup{good, empty, short_page, bad_magic, dir};
+    K3SM_CHECK(write_page(good));
+    {
+        const struct {
+            const std::string* path;
+            std::string bytes;
+        } files[] = {{&empty, ""}, {&short_page, page_bytes.substr(0, 64)}, {&bad_magic, std::string(64, '\0')}};
+        for (const auto& f : files) {
+            const int fd = ::open(f.path->c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+            K3SM_CHECK(fd >= 0);
+            if (fd >= 0) {
+                K3SM_CHECK(::write(fd, f.bytes.data(), f.bytes.size()) == static_cast<ssize_t>(f.bytes.size()));
+                ::close(fd);
+            }
+        }
+    }
+
+    const auto assign_round = [&]() {
+        auto a = sdk::budget_page::open(good.c_str());
+        auto b = sdk::budget_page::open(good.c_str());
+        K3SM_CHECK(a.has_value() && b.has_value());
+        if (!a || !b) {
+            return;
+        }
+        const void* new_base = a->data();
+        const void* old_base = b->data();
+        K3SM_CHECK(new_base != old_base);
+        *b = std::move(*a);
+        K3SM_CHECK(b->data() == new_base && b->size() == sdk::page_size);
+        K3SM_CHECK(a->data() == nullptr && a->size() == 0);
+        const auto r = b->read_at(observed);
+        K3SM_CHECK(r.has_value());
+        if (r) {
+            check_darwin_sample(*r);
+        }
+        // The old mapping is gone: msync on an unmapped range fails with ENOMEM.
+        K3SM_CHECK(::msync(const_cast<void*>(old_base), sdk::page_size, MS_ASYNC) == -1 && errno == ENOMEM);
+    };
+    const auto fail_round = [&]() {
+        const auto e = sdk::budget_page::open(empty.c_str());
+        K3SM_CHECK(!e && e.error() == sdk::error::truncated);
+        const auto m = sdk::budget_page::open(missing.c_str());
+        K3SM_CHECK(!m && m.error() == sdk::error::not_found && m.error().sys_errno() == ENOENT);
+        const auto d = sdk::budget_page::open(dir.c_str());
+        K3SM_CHECK(!d && d.error() == sdk::error::not_found && d.error().sys_errno() == EISDIR);
+        const auto s = open_read(short_page);
+        K3SM_CHECK(!s && s.error() == sdk::error::truncated);
+        const auto b = open_read(bad_magic);
+        K3SM_CHECK(!b && b.error() == sdk::error::abi_mismatch);
+    };
+
+    assign_round();
+    const int before_assign = k3sm_test::open_fd_count();
+    for (int i = 0; i < 300; ++i) {
+        assign_round();
+    }
+    K3SM_CHECK_EQ(k3sm_test::open_fd_count(), before_assign);
+
+    fail_round();
+    const int before_fail = k3sm_test::open_fd_count();
+    for (int i = 0; i < 300; ++i) {
+        fail_round();
+    }
+    K3SM_CHECK_EQ(k3sm_test::open_fd_count(), before_fail);
+}
+
 }  // namespace reader_test
 
 int main() {
@@ -1226,6 +1306,7 @@ int main() {
     reader_test::test_open_follows_symlink();
     reader_test::test_open_carries_eacces_and_enotdir();
     reader_test::test_result_and_move();
+    reader_test::test_move_assign_and_failed_opens_leak_nothing();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "reader_test: %d failure(s)\n", k3sm_test::failures());
         return 1;
