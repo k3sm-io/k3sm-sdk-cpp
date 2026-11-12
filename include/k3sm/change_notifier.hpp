@@ -378,6 +378,11 @@ private:
             return errno == EINTR;
         }
         if (rc > 0) {
+            // A descriptor poll reports as invalid, failed or hung up is no
+            // inotify queue any more, so the wait has failed for good.
+            if ((p.revents & (POLLNVAL | POLLERR | POLLHUP)) != 0) {
+                return false;
+            }
             // Drain the queued events; the word, not the event, says what changed.
             alignas(struct inotify_event) unsigned char buf[1024];
             while (::read(queue_fd_, buf, sizeof buf) > 0) {
