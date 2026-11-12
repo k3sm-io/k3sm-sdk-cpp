@@ -184,8 +184,7 @@ public:
             }
             // One slice is at most a day: the loop re-checks the deadline, and
             // the OS waits never see a count near nanoseconds::max().
-            block(std::min(std::chrono::duration_cast<std::chrono::nanoseconds>(left),
-                           max_slice));
+            block(slice_for(std::chrono::duration_cast<std::chrono::nanoseconds>(left)));
         }
     }
 
@@ -217,6 +216,12 @@ private:
     // max_slice is the longest single block inside wait; a longer timeout
     // is waited out in several slices.
     static constexpr std::chrono::nanoseconds max_slice = std::chrono::hours(24);
+
+    // slice_for returns the length of the next block for a wait with left
+    // still to go: left itself, capped at max_slice.
+    static std::chrono::nanoseconds slice_for(std::chrono::nanoseconds left) noexcept {
+        return std::min(left, max_slice);
+    }
 
     std::uint64_t load() const noexcept {
         return std::atomic_ref<std::uint64_t>(*word_).load(std::memory_order_acquire);

@@ -72,6 +72,9 @@ namespace k3sm::sdk {
 struct change_notifier_test_access {
     static constexpr std::chrono::nanoseconds max_slice() { return change_notifier::max_slice; }
     static constexpr std::chrono::nanoseconds sleep_step() { return change_notifier::sleep_step; }
+    static std::chrono::nanoseconds slice_for(std::chrono::nanoseconds left) {
+        return change_notifier::slice_for(left);
+    }
 
     static bool break_queue(change_notifier& n) {
         if (n.queue_fd_ < 0) {
@@ -853,6 +856,20 @@ void test_wait_caps_are_pinned() {
     K3SM_CHECK(access::sleep_step() == std::chrono::nanoseconds(1'000'000));
 }
 
+// test_wait_slice_is_clamped pins one block of a wait: a timeout up to a day
+// is blocked in one piece, and anything longer, up to nanoseconds::max(), is
+// cut to exactly a day.
+void test_wait_slice_is_clamped() {
+    using access = sdk::change_notifier_test_access;
+    using ns = std::chrono::nanoseconds;
+    K3SM_CHECK(access::slice_for(ns(0)) == ns(0));
+    K3SM_CHECK(access::slice_for(ns(1)) == ns(1));
+    K3SM_CHECK(access::slice_for(ns(86'399'999'999'999LL)) == ns(86'399'999'999'999LL));
+    K3SM_CHECK(access::slice_for(ns(86'400'000'000'000LL)) == ns(86'400'000'000'000LL));
+    K3SM_CHECK(access::slice_for(ns(86'400'000'000'001LL)) == ns(86'400'000'000'000LL));
+    K3SM_CHECK(access::slice_for(ns(9'223'372'036'854'775'807LL)) == ns(86'400'000'000'000LL));
+}
+
 }  // namespace notifier_test
 
 int main(int argc, char** argv) {
@@ -873,6 +890,7 @@ int main(int argc, char** argv) {
     notifier_test::test_doorbell_directory_is_ignored();
     notifier_test::test_doorbell_wait_failure_falls_back_to_sleep();
     notifier_test::test_wait_caps_are_pinned();
+    notifier_test::test_wait_slice_is_clamped();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "notifier_test: %d failure(s)\n", k3sm_test::failures());
         return 1;
