@@ -212,6 +212,61 @@ void test_invalid_header_after_bound() {
     K3SM_CHECK_EQ(bad_magic.versions_loads, 0);
 }
 
+// minor0_page is the darwin golden rewritten as a minor-0 page: the minor
+// word says 0 and the body size is the minor-0 body. The minor-1 bytes past
+// that body stay in the buffer, so a reader that copied them would see them.
+std::string minor0_page() {
+    std::string page = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
+    put_u64(page, sdk::page_offset::abi_major, versions_word(0));
+    put_u64(page, sdk::page_offset::body_size, sdk::page_body_size_minor0);
+    return page;
+}
+
+// The seqlock bound holds on a minor-0 page as on the known minor: a write
+// that moves on every attempt is torn after exactly reader_retries attempts.
+void test_always_moving_minor0() {
+    const std::string page = minor0_page();
+    scripted_source src{&page, [](int n) { return std::uint64_t(2 * n); }};
+    const auto r = sdk::detail::read_page(src, observed);
+    K3SM_CHECK(!r && r.error() == sdk::error::torn);
+    K3SM_CHECK_EQ(src.seq_loads, 2 * sdk::reader_retries);
+    K3SM_CHECK_EQ(src.fences, sdk::reader_retries);
+}
+
+// A write that lands during the first attempt and then settles is read on
+// the second attempt: the body it wrote is in the result, and the minor-1
+// fields a minor-0 body does not carry read absent.
+void test_settles_after_one_write_minor0() {
+    std::string page = minor0_page();
+    K3SM_CHECK(get_u64(page, sdk::page_offset::level) != static_cast<std::uint64_t>(sdk::level::critical));
+    // seq loads: s1 = 10 and s2 = 12 on the first attempt (the write moves
+    // the body to critical between them), then a stable 12.
+    scripted_source src{&page, [&page](int n) {
+                            if (n == 0) {
+                                return std::uint64_t{10};
+                            }
+                            if (n == 1) {
+                                put_u64(page, sdk::page_offset::level,
+                                        static_cast<std::uint64_t>(sdk::level::critical));
+                            }
+                            return std::uint64_t{12};
+                        }};
+    const auto r = sdk::detail::read_page(src, observed);
+    K3SM_CHECK(r.has_value());
+    if (r) {
+        K3SM_CHECK_EQ(r->seq, 12u);
+        K3SM_CHECK_EQ(r->abi_minor, 0u);
+        K3SM_CHECK(r->level == sdk::level::critical);
+        K3SM_CHECK(!r->capacity.cpu_performance_cores.has_value());
+        K3SM_CHECK(!r->capacity.cpu_efficiency_cores.has_value());
+        K3SM_CHECK(!r->capacity.gpu_present.has_value());
+        K3SM_CHECK(!r->capacity.gpu_count.has_value());
+        K3SM_CHECK_EQ(r->node_name(), std::string_view("mac-worker-1"));
+    }
+    K3SM_CHECK_EQ(src.seq_loads, 4);
+    K3SM_CHECK_EQ(src.fences, 2);
+}
+
 }  // namespace torn_test
 
 int main() {
@@ -223,6 +278,8 @@ int main() {
     torn_test::test_rollback_between_header_loads();
     torn_test::test_rollback_settles_on_last_header_attempt();
     torn_test::test_invalid_header_after_bound();
+    torn_test::test_always_moving_minor0();
+    torn_test::test_settles_after_one_write_minor0();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "torn_test: %d failure(s)\n", k3sm_test::failures());
         return 1;
