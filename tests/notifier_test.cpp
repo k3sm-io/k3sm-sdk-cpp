@@ -66,9 +66,11 @@ namespace k3sm::sdk {
 // change_notifier_test_access breaks a notifier's doorbell queue from the
 // outside. It does not close queue_fd_: the destructor closes that number,
 // and a close here would let it close whatever fd reused the number. It
-// puts /dev/null on the number instead, so the queue wait fails (the fd is
-// no kqueue) while the destructor's close stays the close of an fd the
-// notifier owns.
+// puts another fd on the number instead, so the queue wait fails while the
+// destructor's close stays the close of an fd the notifier owns. On Darwin
+// that fd is /dev/null, which is no kqueue. On Linux it is the write end of
+// a pipe whose read end is closed, which poll reports with POLLERR (poll on
+// /dev/null would only report it readable).
 struct change_notifier_test_access {
     static constexpr std::chrono::nanoseconds max_slice() { return change_notifier::max_slice; }
     static constexpr std::chrono::nanoseconds sleep_step() { return change_notifier::sleep_step; }
@@ -80,10 +82,19 @@ struct change_notifier_test_access {
         if (n.queue_fd_ < 0) {
             return false;
         }
+#if defined(__linux__)
+        int ends[2] = {-1, -1};
+        if (::pipe(ends) != 0) {
+            return false;
+        }
+        ::close(ends[0]);
+        const int null_fd = ends[1];
+#else
         const int null_fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
         if (null_fd < 0) {
             return false;
         }
+#endif
         const bool ok = ::dup2(null_fd, n.queue_fd_) == n.queue_fd_;
         ::close(null_fd);
         if (ok) {
@@ -792,12 +803,11 @@ void test_doorbell_directory_is_ignored() {
 }
 
 // test_doorbell_wait_failure_falls_back_to_sleep: a doorbell wait that fails
-// for good (the queue is no longer a kqueue) makes the notifier sleep between
-// polls, and a later bump is still reported. On Linux poll() on /dev/null is
-// always readable, so the broken queue does not fail there; the test is
-// Darwin-only.
+// for good (on Darwin the queue is no longer a kqueue, on Linux poll reports
+// the descriptor with POLLERR) makes the notifier sleep between polls, and a
+// later bump is still reported.
 void test_doorbell_wait_failure_falls_back_to_sleep() {
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
     const std::string path = tmp_path("badqueue.page");
     const std::string bell = tmp_path("badqueue.bell");
     const remove_on_exit cleanup{path, bell};
