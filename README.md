@@ -87,7 +87,9 @@ if (sdk::admit_ok(*s)) {
   stays mapped until the `budget_page` is destroyed; it is move-only. `open`
   never blocks, so a FIFO or device at the path fails at once. It accepts only
   a regular file, follows a symlink and checks its target, and maps at most
-  one page of a longer file.
+  one page of a longer file. `open` fails with `not_found` for a missing,
+  inaccessible or non-regular path and with `truncated` for an empty file. The
+  ABI, header size and body size are checked on every read, not at `open`.
 - `page.read()` copies every field under the page's seqlock and returns
   `result<snapshot>`. It throws nothing, allocates nothing and never reads the
   environment. `page.read_at(now_unix_seconds)` is the same read with the
@@ -125,7 +127,12 @@ if (sdk::admit_ok(*s)) {
   wait blocks on the word in the shared mapping (`os_sync_wait_on_address` on
   macOS, `FUTEX_WAIT` on Linux). `change_notifier(page, doorbell_path)` also
   takes a doorbell file, if the node provides one, as the fallback (kqueue on
-  macOS, inotify on Linux); `n.source()` says which one a wait uses. On macOS
+  macOS, inotify on Linux); `n.source()` says which one a wait uses: `address`
+  (the word in the mapping), `doorbell` (the doorbell file), `sleep` (neither is
+  available, so the word is polled) or `none` (the mapping is too short to hold
+  the word, so nothing changes). One wait is cut into slices of at most 24
+  hours, and after a failed kernel wait the notifier polls the word every
+  millisecond. On macOS
   a doorbell path that is not a regular file (a FIFO, for example) is ignored
   like one that cannot be opened, and the notifier uses its other wake source. The page
   must outlive the notifier. To act on every sample instead, call `read()` on
