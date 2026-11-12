@@ -381,9 +381,19 @@ void test_timeout() {
     K3SM_CHECK(!n.wait(40ms));
     const auto waited = std::chrono::steady_clock::now() - t0;
     K3SM_CHECK(waited >= 39ms);
-    K3SM_CHECK(waited < 2s);
+    // Tight enough that a timeout handed to the OS in the wrong unit (about
+    // 40 times too long) fails.
+    K3SM_CHECK(waited < 1s);
     K3SM_CHECK(!n.wait(0ns));  // a zero timeout is a poll
     K3SM_CHECK(!n.wait(-5ms));
+
+    // Timeouts below a millisecond time out too, and promptly.
+    for (const std::chrono::nanoseconds t :
+         {std::chrono::nanoseconds(1ns), std::chrono::nanoseconds(999us)}) {
+        const auto t1 = std::chrono::steady_clock::now();
+        K3SM_CHECK(!n.wait(t));
+        K3SM_CHECK(std::chrono::steady_clock::now() - t1 < 1s);
+    }
 }
 
 // test_address_cross_process waits on the word while another process bumps it.
