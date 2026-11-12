@@ -185,16 +185,18 @@ auto seq = w->publish(snap);           // the new, even seq, or an error
 - `open` takes an exclusive lock on the lock file, creates the page (mode 0644,
   sized to `page_size`) if it is missing, and takes over an existing one without
   truncating or replacing it. A reader's open mapping survives a writer restart.
-  The writer's generation is the page's previous generation plus one, or 1 on a
-  new page. It also restarts at 1 when the stored generation is negative or has
-  no successor (the largest signed 64-bit value).
+  The writer's generation is the page's previous generation plus one. It
+  restarts at 1 on a new page, on a page with a foreign header, and when the
+  stored generation is negative or has no successor (the largest signed 64-bit
+  value).
 - The lock file must not be in the page's directory, since a pod can open that
   directory. There is one writer per page.
 - `publish` refuses a snapshot the layout cannot carry before it stores
   anything. It bumps `notifyEpoch`, wakes the waiters and writes the doorbell
   on the first publish, and after that only when `notify_due` says the level,
-  `admit`, the generation or a threshold changed. `bump_generation()` adds one
-  to the generation on a policy change.
+  `admit`, the generation or a threshold changed. `publish` writes the
+  writer's generation, not `snap.generation`. `bump_generation()` adds one on a
+  policy change, and restarts at 1 from the largest signed 64-bit value.
 - The writer-side error kinds are `writer_busy` (another writer holds the lock),
   `invalid_argument` (from `open`: a null path, or a lock file in the page's
   directory), `invalid_snapshot`, `node_name_too_long` and `io`, which
