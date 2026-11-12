@@ -61,6 +61,34 @@ extern char** environ;
 namespace sdk = k3sm::sdk;
 using namespace std::chrono_literals;
 
+namespace k3sm::sdk {
+
+// change_notifier_test_access breaks a notifier's doorbell queue from the
+// outside. It does not close queue_fd_: the destructor closes that number,
+// and a close here would let it close whatever fd reused the number. It
+// puts /dev/null on the number instead, so the queue wait fails (the fd is
+// no kqueue) while the destructor's close stays the close of an fd the
+// notifier owns.
+struct change_notifier_test_access {
+    static bool break_queue(change_notifier& n) {
+        if (n.queue_fd_ < 0) {
+            return false;
+        }
+        const int null_fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+        if (null_fd < 0) {
+            return false;
+        }
+        const bool ok = ::dup2(null_fd, n.queue_fd_) == n.queue_fd_;
+        ::close(null_fd);
+        if (ok) {
+            (void)::fcntl(n.queue_fd_, F_SETFD, FD_CLOEXEC);
+        }
+        return ok;
+    }
+};
+
+}  // namespace k3sm::sdk
+
 namespace notifier_test {
 
 const char* self_path = nullptr;
@@ -757,6 +785,61 @@ void test_doorbell_directory_is_ignored() {
     K3SM_CHECK_EQ(n.epoch(), before + 1);
 }
 
+// test_doorbell_wait_failure_falls_back_to_sleep: a doorbell wait that fails
+// for good (the queue is no longer a kqueue) makes the notifier sleep between
+// polls, and a later bump is still reported. On Linux poll() on /dev/null is
+// always readable, so the broken queue does not fail there; the test is
+// Darwin-only.
+void test_doorbell_wait_failure_falls_back_to_sleep() {
+#if defined(__APPLE__)
+    const std::string path = tmp_path("badqueue.page");
+    const std::string bell = tmp_path("badqueue.bell");
+    const remove_on_exit cleanup{path, bell};
+    K3SM_CHECK(write_page(path));
+    const int bfd = ::open(bell.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    K3SM_CHECK(bfd >= 0);
+    if (bfd >= 0) {
+        ::close(bfd);
+    }
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        return;
+    }
+    rw_page rw(path);
+    K3SM_CHECK(rw.base != nullptr);
+    if (rw.base == nullptr) {
+        return;
+    }
+    sdk::change_notifier n(*page, bell.c_str(), sdk::wake_source::doorbell);
+    K3SM_CHECK(n.source() == sdk::wake_source::doorbell);
+    if (n.source() != sdk::wake_source::doorbell) {
+        return;
+    }
+    K3SM_CHECK(sdk::change_notifier_test_access::break_queue(n));
+
+    const auto t0 = std::chrono::steady_clock::now();
+    K3SM_CHECK(!n.wait(30ms));
+    const auto waited = std::chrono::steady_clock::now() - t0;
+    K3SM_CHECK(waited >= 29ms);
+    K3SM_CHECK(waited < 2s);
+    K3SM_CHECK(n.source() == sdk::wake_source::sleep);
+
+    // Sleeping between polls, the notifier still reports a bump.
+    std::thread bumper([&rw] {
+        std::this_thread::sleep_for(20ms);
+        rw.bump();
+    });
+    const std::uint64_t before = n.epoch();
+    const auto t1 = std::chrono::steady_clock::now();
+    K3SM_CHECK(n.wait(5s));
+    K3SM_CHECK(std::chrono::steady_clock::now() - t1 < 1s);
+    bumper.join();
+    K3SM_CHECK_EQ(n.epoch(), before + 1);
+    K3SM_CHECK(n.source() == sdk::wake_source::sleep);
+#endif
+}
+
 }  // namespace notifier_test
 
 int main(int argc, char** argv) {
@@ -775,6 +858,7 @@ int main(int argc, char** argv) {
     notifier_test::test_wait_max_timeout_no_overflow();
     notifier_test::test_doorbell_fifo_does_not_block_construction();
     notifier_test::test_doorbell_directory_is_ignored();
+    notifier_test::test_doorbell_wait_failure_falls_back_to_sleep();
     if (k3sm_test::failures() != 0) {
         std::fprintf(stderr, "notifier_test: %d failure(s)\n", k3sm_test::failures());
         return 1;
