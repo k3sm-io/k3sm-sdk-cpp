@@ -435,8 +435,8 @@ inline constexpr std::int64_t next_generation(std::int64_t g) noexcept {
 // as the apis encoder does: the header, seq 0 and notifyEpoch 0, the body,
 // and zero bytes everywhere else (the node name's unused bytes included).
 // s's header fields, seq and notify_epoch are ignored. It returns page_size,
-// error::invalid_argument for a dst shorter than page_size, or the
-// check_snapshot error; dst is written only on success.
+// error::invalid_argument for a null dst or a dst shorter than page_size, or
+// the check_snapshot error; dst is written only on success.
 inline result<std::size_t> encode_page(const snapshot& s, unsigned char* dst,
                                        std::size_t dst_size) noexcept {
     if (dst == nullptr || dst_size < page_size) {
@@ -480,8 +480,8 @@ public:
     // doorbell_path, when not null, names a doorbell file (created 0644 if
     // missing) the writer writes after every notifyEpoch bump. Errors:
     // writer_busy when another writer holds the lock, invalid_argument for a
-    // lock file inside the page directory, io (with errno) for a failing
-    // system call.
+    // null page_path or lock_path or a lock file inside the page directory,
+    // io (with errno) for a failing system call.
     static result<page_writer> open(const char* page_path, const char* lock_path,
                                     const char* doorbell_path = nullptr) noexcept {
         if (page_path == nullptr || lock_path == nullptr) {
