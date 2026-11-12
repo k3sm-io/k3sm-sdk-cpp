@@ -26,6 +26,7 @@ limitations under the License.
 
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -686,6 +687,48 @@ void test_open_argument_and_path_errors() {
     K3SM_CHECK(::stat(lock.c_str(), &st) != 0 && errno == ENOENT);
 }
 
+// An empty or over-long page or lock path fails as io with its own errno
+// (ENOENT or ENAMETOOLONG), never whatever an earlier call left in errno,
+// and creates neither file.
+void test_open_bad_path_errno() {
+    const std::string page = page_path("badpath.page");
+    const std::string lock = lock_path("badpath.lock");
+    const unlinker guard{page, lock};
+    const std::string long_page = page_dir() + "/" + std::string(PATH_MAX, 'p');
+    const std::string long_lock = lock_dir() + "/" + std::string(PATH_MAX, 'l');
+    constexpr int sentinel = 777;
+
+    struct bad_case {
+        const char* name;
+        const char* page;
+        const char* lock;
+        int want;
+    };
+    const bad_case cases[] = {
+        {"empty page path", "", lock.c_str(), ENOENT},
+        {"over-long page path", long_page.c_str(), lock.c_str(), ENAMETOOLONG},
+        {"empty lock path", page.c_str(), "", ENOENT},
+        {"over-long lock path", page.c_str(), long_lock.c_str(), ENAMETOOLONG},
+    };
+    for (const bad_case& c : cases) {
+        errno = sentinel;
+        auto w = sdk::page_writer::open(c.page, c.lock);
+        K3SM_CHECK(!w && w.error() == sdk::error::io);
+        if (!w) {
+            if (w.error().sys_errno() != c.want) {
+                std::fprintf(stderr, "test_open_bad_path_errno: %s: sys_errno %d, want %d\n", c.name,
+                             w.error().sys_errno(), c.want);
+            }
+            K3SM_CHECK_EQ(w.error().sys_errno(), c.want);
+        }
+        struct stat st {};
+        K3SM_CHECK(::stat(page.c_str(), &st) != 0 && errno == ENOENT);
+        K3SM_CHECK(::stat(lock.c_str(), &st) != 0 && errno == ENOENT);
+        K3SM_CHECK(::stat(long_page.c_str(), &st) != 0);
+        K3SM_CHECK(::stat(long_lock.c_str(), &st) != 0);
+    }
+}
+
 // Move assignment releases the target's own lock and mapping and takes the
 // source's: the target's old page opens again, the source's page stays held,
 // and the target carries the source's seq and generation. A self-move is a
@@ -1323,6 +1366,7 @@ int main() {
     writer_test::test_lock_left_by_dead_writer();
     writer_test::test_open_fails_after_lock();
     writer_test::test_open_argument_and_path_errors();
+    writer_test::test_open_bad_path_errno();
     writer_test::test_move_assignment();
     writer_test::test_doorbell_silent_when_not_due();
     writer_test::test_resume_odd_seq();

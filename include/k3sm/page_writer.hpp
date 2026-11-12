@@ -327,12 +327,17 @@ inline void wake_all(std::uint64_t* word) noexcept {
 #endif
 }
 
-// parent_dir_stat stats the directory that holds path.
-inline bool parent_dir_stat(const char* path, struct stat* out) noexcept {
+// parent_dir_stat stats the directory that holds path. It returns 0, or the
+// errno of the failure: ENOENT for an empty path, ENAMETOOLONG for one of
+// PATH_MAX bytes or more, and the errno of a failed stat.
+inline int parent_dir_stat(const char* path, struct stat* out) noexcept {
     char dir[PATH_MAX];
     const std::size_t n = std::strlen(path);
-    if (n == 0 || n >= sizeof dir) {
-        return false;
+    if (n == 0) {
+        return ENOENT;
+    }
+    if (n >= sizeof dir) {
+        return ENAMETOOLONG;
     }
     std::memcpy(dir, path, n + 1);
     char* slash = std::strrchr(dir, '/');
@@ -344,14 +349,18 @@ inline bool parent_dir_stat(const char* path, struct stat* out) noexcept {
     } else {
         *slash = '\0';
     }
-    return ::stat(dir, out) == 0;
+    if (::stat(dir, out) != 0) {
+        return errno;
+    }
+    return 0;
 }
 
 // preallocate makes the file at fd at least page_size bytes long by writing
 // zero bytes over the missing range, so the blocks exist before the page is
 // mapped and a store through the mapping never meets an unbacked page. It
-// only ever extends the file.
-inline bool preallocate(int fd, std::size_t current) noexcept {
+// only ever extends the file. It returns 0, or the errno of the failure (EIO
+// when pwrite writes nothing); an fsync EINVAL counts as success.
+inline int preallocate(int fd, std::size_t current) noexcept {
     const unsigned char zeros[512] = {};
     std::size_t at = current;
     while (at < page_size) {
@@ -360,12 +369,18 @@ inline bool preallocate(int fd, std::size_t current) noexcept {
         if (w < 0 && errno == EINTR) {
             continue;
         }
-        if (w <= 0) {
-            return false;
+        if (w < 0) {
+            return errno;
+        }
+        if (w == 0) {
+            return EIO;
         }
         at += static_cast<std::size_t>(w);
     }
-    return ::fsync(fd) == 0 || errno == EINVAL;
+    if (::fsync(fd) != 0 && errno != EINVAL) {
+        return errno;
+    }
+    return 0;
 }
 
 // header_words is the number of 8-byte words of the header line a resume
@@ -474,8 +489,11 @@ public:
         }
         struct stat page_dir {};
         struct stat lock_dir {};
-        if (!detail::parent_dir_stat(page_path, &page_dir) || !detail::parent_dir_stat(lock_path, &lock_dir)) {
-            return error(error::io, errno);
+        if (const int e = detail::parent_dir_stat(page_path, &page_dir); e != 0) {
+            return error(error::io, e);
+        }
+        if (const int e = detail::parent_dir_stat(lock_path, &lock_dir); e != 0) {
+            return error(error::io, e);
         }
         if (page_dir.st_dev == lock_dir.st_dev && page_dir.st_ino == lock_dir.st_ino) {
             return error::invalid_argument;
@@ -495,10 +513,11 @@ public:
             return error(error::io, errno);
         }
         struct stat st {};
-        if (::fstat(fd, &st) != 0 || !detail::preallocate(fd, static_cast<std::size_t>(st.st_size))) {
-            const int e = errno;
+        const int pe =
+            ::fstat(fd, &st) != 0 ? errno : detail::preallocate(fd, static_cast<std::size_t>(st.st_size));
+        if (pe != 0) {
             ::close(fd);
-            return error(error::io, e);
+            return error(error::io, pe);
         }
         void* base = ::mmap(nullptr, page_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         const int e = errno;
