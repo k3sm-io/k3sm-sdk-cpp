@@ -95,6 +95,16 @@ int run(const char* self) {
     ::mkdir(state_dir.c_str(), 0700);
     const std::string page = page_dir + "/budget.v1.page";
     const std::string lock = state_dir + "/writer.lock";
+    struct cleanup_guard {
+        const std::string &page, &lock, &page_dir, &state_dir, &base;
+        ~cleanup_guard() {
+            ::unlink(page.c_str());
+            ::unlink(lock.c_str());
+            ::rmdir(page_dir.c_str());
+            ::rmdir(state_dir.c_str());
+            ::rmdir(base.c_str());
+        }
+    } guard{page, lock, page_dir, state_dir, base};
 
     int ready[2];
     if (::pipe(ready) != 0) {
@@ -169,11 +179,6 @@ int run(const char* self) {
     K3SM_CHECK(accepted >= 1000);
     K3SM_CHECK(distinct >= 100);
     K3SM_CHECK(raw_mixed > 0);  // the processes raced, so the oracle had work
-    ::unlink(page.c_str());
-    ::unlink(lock.c_str());
-    ::rmdir(page_dir.c_str());
-    ::rmdir(state_dir.c_str());
-    ::rmdir(base.c_str());
     return 0;
 }
 

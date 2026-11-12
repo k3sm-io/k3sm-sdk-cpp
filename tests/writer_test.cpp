@@ -29,11 +29,13 @@ limitations under the License.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -55,6 +57,19 @@ std::string page_dir() { return base_dir() + "/page"; }
 std::string lock_dir() { return base_dir() + "/state"; }
 std::string page_path(const char* name) { return page_dir() + "/" + name; }
 std::string lock_path(const char* name) { return lock_dir() + "/" + name; }
+
+// Unlinks each path it holds when it leaves scope, so an early return cannot leak a test file.
+struct unlinker {
+    std::vector<std::string> paths;
+    explicit unlinker(std::initializer_list<std::string> p) : paths(p) {}
+    unlinker(const unlinker&) = delete;
+    unlinker& operator=(const unlinker&) = delete;
+    ~unlinker() {
+        for (const std::string& p : paths) {
+            ::unlink(p.c_str());
+        }
+    }
+};
 
 std::uint64_t get_u64(const std::string& page, std::size_t offset) {
     std::uint64_t v = 0;
@@ -341,6 +356,7 @@ void test_notify_vectors() {
     const auto vectors = k3sm_test::json_objects(m, "notifyVectors");
     K3SM_CHECK(vectors.size() >= 10);
     const std::string page = page_path("vectors.page");
+    const unlinker guard{page};
     auto w = sdk::page_writer::open(page.c_str(), lock_path("vectors.lock").c_str());
     K3SM_CHECK(w.has_value());
     if (!w) {
@@ -378,6 +394,7 @@ void test_notify_vectors() {
 
 void test_live_page() {
     const std::string page = page_path("live.page");
+    const unlinker guard{page};
     const std::string lock = lock_path("live.lock");
     const std::string want = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
     const sdk::snapshot darwin = golden("darwin.v1.page");
@@ -464,6 +481,7 @@ void test_live_page() {
 // A writer that died mid-write left seq odd: the next writer moves past it.
 void test_resume_odd_seq() {
     const std::string page = page_path("odd.page");
+    const unlinker guard{page};
     std::string bytes = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
     put_u64(bytes, sdk::page_offset::seq, 41);
     put_u64(bytes, sdk::page_offset::notify_epoch, 7);
@@ -560,6 +578,7 @@ void test_resume_header_store_order() {
 // over: the header is this minor's, and the page reads.
 void test_resume_rollback_page() {
     const std::string page = page_path("rollback.page");
+    const unlinker guard{page};
     std::string bytes = k3sm_test::read_file(k3sm_test::fixture("darwin.v1.page"));
     bytes.resize(sdk::page_size, '\0');
     put_u64(bytes, sdk::page_offset::abi_major, versions_word(2));
@@ -660,6 +679,7 @@ void test_resume_foreign_header_with_intact_magic() {
 // A short file that is not a page grows in place to page_size and starts over.
 void test_short_file_grows_in_place() {
     const std::string page = page_path("short.page");
+    const unlinker guard{page};
     {
         const int fd = ::open(page.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         const char junk[100] = {'j', 'u', 'n', 'k'};
@@ -690,6 +710,7 @@ void test_short_file_grows_in_place() {
 void test_wake_and_doorbell() {
     const std::string page = page_path("wake.page");
     const std::string bell = page_path("budget.bell");
+    const unlinker guard{page, bell};
     auto w = sdk::page_writer::open(page.c_str(), lock_path("wake.lock").c_str(), bell.c_str());
     K3SM_CHECK(w.has_value());
     if (!w) {
@@ -729,7 +750,7 @@ void test_wake_and_doorbell() {
 }
 
 void cleanup() {
-    for (const char* f : {"vectors.lock", "live.lock", "odd.lock", "rollback.lock", "short.lock", "wake.lock"}) {
+    for (const char* f : {"vectors.lock", "live.lock", "odd.lock", "rollback.lock", "short.lock", "wake.lock", "foreign.lock"}) {
         ::unlink(lock_path(f).c_str());
     }
     ::rmdir(page_dir().c_str());
