@@ -45,6 +45,7 @@ target_link_libraries(your_target PRIVATE k3sm::sdk)
 
 Pulled in by another project, the SDK builds no tests and adds no install
 rules; set `K3SM_SDK_BUILD_TESTS` or `K3SM_SDK_INSTALL` to `ON` to change that.
+Contributors have three more test options, described under Build and test.
 
 ## API
 
@@ -212,7 +213,8 @@ auto seq = w->publish(snap);     // the new, even seq, or an error
   policy change, and restarts at 1 from the largest signed 64-bit value.
 - The writer-side error kinds are `writer_busy` (another writer holds the lock),
   `invalid_argument` (from `open`: a null path, or a lock file in the page's
-  directory), `invalid_snapshot`, `node_name_too_long` and `io`, which
+  directory; from `encode_page`: a null buffer or one shorter than `page_size`),
+  `invalid_snapshot`, `node_name_too_long` and `io`, which
   carries the `errno` of the failing call in `sys_errno()`.
 - A `page_writer` is move-only and not safe for concurrent use from several
   threads.
@@ -230,6 +232,13 @@ hack/ci.sh --compile-extras # build (not run) the stress test (RelWithDebInfo, T
 hack/ci.sh --stress   # ThreadSanitizer stress, fuzz smoke, ASan/UBSan, bench
 ```
 
+`hack/ci.sh --cshim` and `--linux-vm` are placeholders that print a notice and
+exit; `--linux-vm` points to `hack/linux-test.sh`.
+
+Two tests leave out one case when run as root: the reader's permission-denied
+case and the writer's mode-0000 page case. Each prints a `skip:` line on
+stderr and still passes, so a run as a non-root user covers them.
+
 Requirements: CMake 3.24 or later and a C++20 compiler (Apple clang from the
 Xcode Command Line Tools is enough). The SDK depends on nothing outside the
 standard library. `hack/ci.sh --stress` also needs a clang with libFuzzer, which
@@ -243,6 +252,14 @@ AddressSanitizer and UndefinedBehaviorSanitizer. When the compiler cannot link
 and the run prints a `WAIVED` line; `hack/ci.sh --stress` takes no such waiver.
 The plain `cmake` and `ctest` commands above add the sanitizers only when the
 compiler links them, and say nothing when it does not.
+
+The test directory has three more CMake options. `K3SM_SDK_SANITIZER` takes
+`auto` (the default), `thread` or `none`: `auto` builds with AddressSanitizer
+and UndefinedBehaviorSanitizer when the compiler links them, `thread` uses
+ThreadSanitizer and fails if the compiler cannot, and `none` uses no sanitizer.
+`K3SM_SDK_STRESS` (default `OFF`) adds the torn-read stress test and the
+benchmark. `K3SM_SDK_FUZZ` (default `OFF`) adds the libFuzzer harness and needs
+a clang with libFuzzer.
 
 `hack/ci.sh` is the macOS gate and does not build the Linux tests. On a Linux
 host, run `hack/linux-test.sh`: it builds and runs the tests with the compiler
