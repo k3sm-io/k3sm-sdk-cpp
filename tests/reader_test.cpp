@@ -1353,6 +1353,25 @@ void test_open_carries_eacces_and_enotdir() {
     K3SM_CHECK(!q && q.error().sys_errno() == ENOTDIR);
 }
 
+// test_open_carries_eloop_and_enametoolong: open reports the errno of a
+// symlink loop and of a path component longer than the system allows.
+void test_open_carries_eloop_and_enametoolong() {
+    const std::string dir = make_temp_dir();
+    const std::string a = dir + "/a.link";
+    const std::string b = dir + "/b.link";
+    const remove_on_exit cleanup{a, b, dir};
+    K3SM_CHECK_EQ(::symlink(b.c_str(), a.c_str()), 0);
+    K3SM_CHECK_EQ(::symlink(a.c_str(), b.c_str()), 0);
+    const auto loop = sdk::budget_page::open(a.c_str());
+    K3SM_CHECK(!loop && loop.error() == sdk::error::not_found);
+    K3SM_CHECK(!loop && loop.error().sys_errno() == ELOOP);
+
+    const std::string longname(5000, 'x');
+    const auto tooLong = sdk::budget_page::open(longname.c_str());
+    K3SM_CHECK(!tooLong && tooLong.error() == sdk::error::not_found);
+    K3SM_CHECK(!tooLong && tooLong.error().sys_errno() == ENAMETOOLONG);
+}
+
 void test_result_and_move() {
     sdk::result<int> ok = 7;
     K3SM_CHECK(ok && *ok == 7);
@@ -1481,6 +1500,7 @@ int main() {
     reader_test::test_corrupt_beats_stale();
     reader_test::test_open_follows_symlink();
     reader_test::test_open_carries_eacces_and_enotdir();
+    reader_test::test_open_carries_eloop_and_enametoolong();
     reader_test::test_result_and_move();
     reader_test::test_move_assign_and_failed_opens_leak_nothing();
     if (k3sm_test::failures() != 0) {
