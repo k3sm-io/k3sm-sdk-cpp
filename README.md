@@ -113,7 +113,11 @@ if (sdk::admit_ok(*s)) {
   node bumps only when the level, `admit`, a threshold or the generation
   changes. `n.wait(timeout)` blocks until it moves (true) or the timeout
   passes (false); `n.poll()` checks it without blocking; `n.epoch()` is the
-  last value seen. Several bumps before a wake are reported as one change. The
+  last value seen. A notifier starts from the epoch on the page when it is
+  built; if you read a snapshot first, call `n.seed(s->notify_epoch)` so a
+  bump between the read and the construction is reported by the first wait.
+  `n.wait(std::chrono::nanoseconds::max())` waits with no deadline. Several
+  bumps before a wake are reported as one change. The
   wait blocks on the word in the shared mapping (`os_sync_wait_on_address` on
   macOS, `FUTEX_WAIT` on Linux). `change_notifier(page, doorbell_path)` also
   takes a doorbell file, if the node provides one, as the fallback (kqueue on
