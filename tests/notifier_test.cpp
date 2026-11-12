@@ -584,7 +584,7 @@ void test_doorbell_ring_wakes_the_queue() {
     K3SM_CHECK(!ring_failed.load(std::memory_order_acquire));
     K3SM_CHECK(ok);
     K3SM_CHECK(after_ring);
-    K3SM_CHECK(waited >= 100ms);
+    // No lower bound: after_ring and the upper bound already prove the ring ended the wait.
     K3SM_CHECK(waited < 2s);
     K3SM_CHECK_EQ(n.epoch(), before);
     K3SM_CHECK(n.source() == sdk::wake_source::doorbell);

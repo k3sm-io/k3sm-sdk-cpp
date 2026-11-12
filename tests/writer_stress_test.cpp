@@ -16,7 +16,7 @@ limitations under the License.
 
 // The writer and the reader in two processes on one shared page. This
 // binary spawns itself as the writer, which maps the page through
-// page_writer and publishes as fast as it can for a fixed time; the parent
+// page_writer and publishes as fast as it can until told to stop; the parent
 // maps the same file through budget_page and reads in a tight loop. Every
 // published word is a function of the publication's number k (observedAt),
 // so a snapshot mixing two publications is caught by checking every word
@@ -52,7 +52,14 @@ using namespace std::chrono_literals;
 
 namespace stress_test {
 
-constexpr auto writer_runtime = 1500ms;
+// The writer runs at least the minimum and until the control has seen a mixed
+// copy (the parent then sends SIGUSR1), or until the maximum on its own.
+constexpr auto writer_min_runtime = 1500ms;
+constexpr auto writer_max_runtime = 30s;
+
+volatile sig_atomic_t stop_requested = 0;
+
+void on_stop(int) { stop_requested = 1; }
 
 using k3sm_test::consistent;
 using k3sm_test::last_word;
@@ -60,6 +67,7 @@ using k3sm_test::publication;
 using k3sm_test::word;
 
 int writer_main(const char* page, const char* lock, int ready_fd) {
+    ::signal(SIGUSR1, on_stop);
     auto w = sdk::page_writer::open(page, lock);
     if (!w) {
         return 3;
@@ -73,8 +81,8 @@ int writer_main(const char* page, const char* lock, int ready_fd) {
         return 5;
     }
     ::close(ready_fd);
-    const auto deadline = std::chrono::steady_clock::now() + writer_runtime;
-    while (std::chrono::steady_clock::now() < deadline) {
+    const auto deadline = std::chrono::steady_clock::now() + writer_max_runtime;
+    while (stop_requested == 0 && std::chrono::steady_clock::now() < deadline) {
         for (int burst = 0; burst < 64; ++burst) {
             if (!w->publish(publication(++k))) {
                 return 6;
@@ -124,6 +132,8 @@ int run(const char* self) {
     std::int64_t generation = 0;
     K3SM_CHECK(::read(ready[0], &generation, sizeof generation) == sizeof generation);
     ::close(ready[0]);
+    const auto start = std::chrono::steady_clock::now();
+    bool stop_sent = false;
 
     auto reader = sdk::budget_page::open(page.c_str());
     K3SM_CHECK(reader.has_value());
@@ -167,6 +177,10 @@ int run(const char* self) {
             if (last != word(k, last_word)) {
                 ++raw_mixed;
             }
+        }
+        if (!stop_sent && pid > 0 && raw_mixed > 0 &&
+            std::chrono::steady_clock::now() - start >= writer_min_runtime) {
+            stop_sent = ::kill(pid, SIGUSR1) == 0;
         }
         done = ::waitpid(pid, &status, WNOHANG) == pid;
     }
