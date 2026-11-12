@@ -846,6 +846,49 @@ void test_doorbell_wait_failure_falls_back_to_sleep() {
 #endif
 }
 
+// test_preferred_doorbell_still_sees_a_bump_without_a_ring: with the doorbell
+// as the wake source, a bump of the epoch word that is never followed by a
+// doorbell write or a wake on the word is still reported, well before the
+// wait's timeout.
+void test_preferred_doorbell_still_sees_a_bump_without_a_ring() {
+    const std::string path = tmp_path("noring.page");
+    const std::string bell = tmp_path("noring.bell");
+    const remove_on_exit cleanup{path, bell};
+    K3SM_CHECK(write_page(path));
+    const int bfd = ::open(bell.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    K3SM_CHECK(bfd >= 0);
+    if (bfd >= 0) {
+        ::close(bfd);
+    }
+    auto page = sdk::budget_page::open(path.c_str());
+    if (!page) {
+        k3sm_test::fail(__FILE__, __LINE__, "open");
+        return;
+    }
+    rw_page rw(path);
+    K3SM_CHECK(rw.base != nullptr);
+    if (rw.base == nullptr) {
+        return;
+    }
+    sdk::change_notifier n(*page, bell.c_str(), sdk::wake_source::doorbell);
+    K3SM_CHECK(n.source() == sdk::wake_source::doorbell);
+    if (n.source() != sdk::wake_source::doorbell) {
+        return;
+    }
+
+    // Bump the word only: no doorbell write, no wake.
+    std::thread bumper([&rw] {
+        std::this_thread::sleep_for(20ms);
+        rw.bump();
+    });
+    const std::uint64_t before = n.epoch();
+    const auto t0 = std::chrono::steady_clock::now();
+    K3SM_CHECK(n.wait(3s));
+    K3SM_CHECK(std::chrono::steady_clock::now() - t0 < 1s);
+    bumper.join();
+    K3SM_CHECK_EQ(n.epoch(), before + 1);
+}
+
 // test_wait_caps_are_pinned pins the two numbers a wait is built from: the
 // longest single block (a day) and the sleep fallback's poll step (1 ms).
 void test_wait_caps_are_pinned() {
@@ -889,6 +932,7 @@ int main(int argc, char** argv) {
     notifier_test::test_doorbell_fifo_does_not_block_construction();
     notifier_test::test_doorbell_directory_is_ignored();
     notifier_test::test_doorbell_wait_failure_falls_back_to_sleep();
+    notifier_test::test_preferred_doorbell_still_sees_a_bump_without_a_ring();
     notifier_test::test_wait_caps_are_pinned();
     notifier_test::test_wait_slice_is_clamped();
     if (k3sm_test::failures() != 0) {
