@@ -239,6 +239,8 @@ Two tests leave out one case when run as root: the reader's permission-denied
 case and the writer's mode-0000 page case. Each prints a `skip:` line on
 stderr and still passes, so a run as a non-root user covers them.
 
+For that reason `hack/ci.sh` refuses to run as root, before any build step.
+
 Requirements: CMake 3.24 or later and a C++20 compiler (Apple clang from the
 Xcode Command Line Tools is enough). The SDK depends on nothing outside the
 standard library. `hack/ci.sh --stress` also needs a clang with libFuzzer, which
