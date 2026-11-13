@@ -25,11 +25,17 @@ code from the other k3sm repositories.
 cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure
 hack/ci.sh      # the full gate
 ```
-- `hack/ci.sh` is the gate: configure, build and ctest as separate sources and as a unity build;
-  install and consume through `find_package(k3sm-sdk CONFIG)`; consume through FetchContent with no
-  options; the version check; shellcheck; license headers; dormant workflows; the dependency check; and
-  `--compile-extras`, which builds (never runs) the stress test (RelWithDebInfo, ThreadSanitizer)
-  and the benchmark (Release, no sanitizers), the configurations `--stress` runs them in.
+- `hack/ci.sh` is the gate, and it refuses to run as root before any build step (`hack/lib/nonroot.sh`).
+  Its stages: configure, build and ctest as separate sources and as a unity build; install and consume
+  through `find_package(k3sm-sdk CONFIG)`; consume through FetchContent with no options; the version
+  check and its self-test; the sanitizer self-test (the requirement can fail and honours only its
+  waiver); the ctest self-test (every ctest call carries `--no-tests=error`); the non-root self-test;
+  shellcheck over `hack/**/*.sh`, with `hack/linux-test.sh` refusing on any other host; license headers;
+  dormant workflows; the dependency check and its self-test; the vendored page fixtures against
+  `SHA256SUMS`; then `--notifier`; and `--compile-extras`, which builds (never runs) the stress test
+  (RelWithDebInfo, ThreadSanitizer) and the benchmark (Release, no sanitizers), the configurations
+  `--stress` runs them in. It ends with the `--cshim` and `--linux-vm` placeholders, which only print a
+  notice. It does not run `--stress`.
 - **No third-party dependencies, ever.** `hack/verify-deps.sh` (run by `ci.sh`) fails on any
   `FetchContent_Declare`, `ExternalProject_Add`, CPM call or git submodule not listed in
   `hack/deps.allow` with an exact commit sha, and the allow file is empty.
