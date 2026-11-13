@@ -24,6 +24,9 @@
 #   4b. every ctest call in hack/ci.sh and hack/linux-test.sh carries
 #      --no-tests=error, so a call that selects no test fails (a static scan,
 #      hack/verify-ctest-selftest.sh)
+#   4c. the gate refuses to run as root, before any build step, in every
+#      stage (hack/lib/nonroot.sh, checked by
+#      hack/verify-non-root-selftest.sh)
 #   5. shellcheck over every hack/**/*.sh, and hack/linux-test.sh (the
 #      entry point on a Linux host) refuses on any other host
 #   6. every C and C++ file carries the Apache-2.0 header
@@ -90,6 +93,11 @@
 # run --stress.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# The permission-denied cases of the reader and writer tests skip as root, so
+# a root run would go green without them: refuse it (hack/lib/nonroot.sh).
+# shellcheck source=hack/lib/nonroot.sh
+. hack/lib/nonroot.sh
+require_non_root || exit 1
 stage="${1:-}"
 case "$stage" in
 	--cshim)
@@ -431,6 +439,9 @@ bash hack/verify-sanitizers-selftest.sh
 
 echo "==> ctest runs at least one test per stage (--no-tests=error)"
 bash hack/verify-ctest-selftest.sh
+
+echo "==> the gate refuses to run as root (hack/lib/nonroot.sh)"
+bash hack/verify-non-root-selftest.sh
 
 echo "==> shellcheck (hack/**/*.sh)"
 command -v shellcheck >/dev/null || { echo "FAIL: shellcheck is not installed"; exit 1; }
