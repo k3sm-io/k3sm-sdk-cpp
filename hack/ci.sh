@@ -30,7 +30,7 @@
 #   5. shellcheck over every hack/**/*.sh, and hack/linux-test.sh (the
 #      entry point on a Linux host) refuses on any other host
 #   6. every C and C++ file carries the Apache-2.0 header
-#   7. every file under .github/workflows/ is dormant (fully commented out)
+#   7. no file exists under .github/workflows/ (no CI on GitHub, see CLAUDE.md)
 #   8. the dependency supply-chain check: its self-test, then the live tree
 #   9. the vendored page fixtures match their SHA256SUMS
 #      (hack/verify-fixtures.sh, after its self-test)
@@ -299,9 +299,9 @@ if [ "$stage" = --stress ]; then
 	cxx="$(fuzz_cxx)"
 	if [ -z "$cxx" ]; then
 		echo "FAIL: no C++ compiler here links -fsanitize=fuzzer (libFuzzer)."
-		echo "      Apple clang ships no libFuzzer runtime. Install an LLVM clang (on macOS:"
-		echo "      'brew install llvm', found at \$(brew --prefix llvm)/bin/clang++; on Linux: the"
-		echo "      distribution's clang package) or point K3SM_SDK_FUZZ_CXX at one, then re-run."
+		echo "      Apple clang ships no libFuzzer runtime. An LLVM clang runs in a k3sm pod, never"
+		echo "      installed on the host (containers only, CONTRIBUTING.md): point K3SM_SDK_FUZZ_CXX at"
+		echo "      the pod's clang++ (on Linux: the distribution's clang package), then re-run."
 		exit 1
 	fi
 	echo "    $cxx ($("$cxx" --version | head -n 1))"
@@ -444,7 +444,7 @@ echo "==> the gate refuses to run as root (hack/lib/nonroot.sh)"
 bash hack/verify-non-root-selftest.sh
 
 echo "==> shellcheck (hack/**/*.sh)"
-command -v shellcheck >/dev/null || { echo "FAIL: shellcheck is not installed"; exit 1; }
+command -v shellcheck >/dev/null || { echo "FAIL: shellcheck is not on this host; it runs in a k3sm pod, never installed on the host (containers only, CONTRIBUTING.md)"; exit 1; }
 find hack -name '*.sh' -print0 | xargs -0 shellcheck
 echo "    ok"
 
@@ -467,24 +467,23 @@ echo "==> license headers (C and C++)"
 bash hack/verify-boilerplate.sh --self-test
 bash hack/verify-boilerplate.sh
 
-echo "==> workflows dormant (.github/workflows)"
-# A workflow file is dormant iff it has no line that is neither blank nor a
-# comment. Every file counts, whatever its name or extension. Deliberately
-# strict: a stray '---' or a byte-order mark makes a file active.
-active=0
-if [ -d .github/workflows ]; then
-	while IFS= read -r -d '' f; do
-		if grep -qEv '^[[:space:]]*(#|$)' "$f"; then
-			echo "    ACTIVE: $f"; active=1
-		fi
-	done < <(find .github/workflows -type f -print0)
+echo "==> no workflow files (.github/workflows)"
+# There is no CI on GitHub: no file may exist under .github/workflows/, of any name,
+# commented out or not. Dotfiles, nested files and symlinks count.
+wf_present() { # <dir>: print each entry under it; exit 0 iff there is one
+	[ -e "$1" ] || [ -L "$1" ] || return 1
+	[ -d "$1" ] || { echo "$1"; return 0; }
+	find "$1" -mindepth 1 \( -type f -o -type l \) | grep .
+}
+if found="$(wf_present .github/workflows)"; then
+	printf '%s\n' "$found" | sed 's/^/    PRESENT: /'
+	echo "FAIL: no workflow file may exist (no CI on GitHub)"; exit 1
 fi
-[ "$active" = 0 ] || { echo "FAIL: workflows must stay fully commented out"; exit 1; }
-# Red-path check, so the predicate above cannot pass vacuously.
-printf '# off\non: push\n' > "$tmp/active.yml"
-printf '# off\n\n  # still off\n' > "$tmp/dormant.yml"
-grep -qEv '^[[:space:]]*(#|$)' "$tmp/active.yml" || { echo "FAIL: predicate missed an active file"; exit 1; }
-! grep -qEv '^[[:space:]]*(#|$)' "$tmp/dormant.yml" || { echo "FAIL: predicate flagged a dormant file"; exit 1; }
+# Red-path check, so the scan above cannot pass vacuously.
+mkdir -p "$tmp/wf/.github/workflows" && printf '# off\n' > "$tmp/wf/.github/workflows/.c.yml"
+wf_present "$tmp/wf/.github/workflows" >/dev/null || { echo "FAIL: the scan missed a commented-out dotfile workflow"; exit 1; }
+mkdir -p "$tmp/wf2/.github" && : > "$tmp/wf2/.github/dependabot.yml"
+! wf_present "$tmp/wf2/.github/workflows" >/dev/null || { echo "FAIL: the scan flagged a repo with no workflows dir"; exit 1; }
 echo "    ok"
 
 echo "==> dependency supply-chain (hack/verify-deps.sh)"
@@ -503,6 +502,32 @@ echo "==> placeholder stages (--cshim --linux-vm)"
 for st in --cshim --linux-vm; do
 	bash hack/ci.sh "$st" | sed 's/^/    /'
 done
+
+# DCO sign-off (there is no CI on GitHub: this stage is the check). Every commit this
+# branch adds over origin/main must carry a Signed-off-by line whose email is the
+# author's, matched as a FIXED string (an ERE breaks on id+user@users.noreply addresses).
+# A lone clone without origin/main skips, saying so; a synced main checks nothing.
+echo "==> [k3sm-sdk-cpp] DCO sign-off (commits not on origin/main)"
+dco_signed() { # <author-email> <message>: exit 0 iff a Signed-off-by line names the email
+	printf '%s\n' "$2" | grep -iE '^Signed-off-by: ' | grep -qiF "<$1>"
+}
+dco_signed 'a+b@users.noreply.github.com' 'x
+
+Signed-off-by: A <a+b@users.noreply.github.com>' || { echo "FAIL: [k3sm-sdk-cpp] DCO self-test: a signed commit was rejected"; exit 1; }
+! dco_signed 'a@example.com' 'x
+
+Co-authored-by: A <a@example.com>' || { echo "FAIL: [k3sm-sdk-cpp] DCO self-test: an unsigned commit passed"; exit 1; }
+if git rev-parse --verify -q origin/main >/dev/null 2>&1; then
+	dco_bad=0
+	for sha in $(git rev-list --no-merges origin/main..HEAD); do
+		dco_signed "$(git show -s --format='%ae' "$sha")" "$(git show -s --format='%B' "$sha")" \
+			|| { echo "    UNSIGNED: $(git show -s --format='%h %s' "$sha")"; dco_bad=1; }
+	done
+	[ "$dco_bad" = 0 ] || { echo "FAIL: [k3sm-sdk-cpp] sign off the commits above: git commit -s (see CONTRIBUTING.md)"; exit 1; }
+	echo "    sign-off OK ($(git rev-list --no-merges --count origin/main..HEAD) new commit(s))"
+else
+	echo "    SKIP: no origin/main ref in this clone, nothing to compare against"
+fi
 
 echo "k3sm-sdk-cpp ci: green"
 ci_done=1
