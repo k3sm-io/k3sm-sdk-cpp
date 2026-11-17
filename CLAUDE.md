@@ -31,7 +31,7 @@ hack/ci.sh      # the full gate
   check and its self-test; the sanitizer self-test (the requirement can fail and honours only its
   waiver); the ctest self-test (every ctest call carries `--no-tests=error`); the non-root self-test;
   shellcheck over `hack/**/*.sh`, with `hack/linux-test.sh` refusing on any other host; license headers;
-  dormant workflows; the dependency check and its self-test; the vendored page fixtures against
+  no workflow files; the dependency check and its self-test; the vendored page fixtures against
   `SHA256SUMS`; then `--notifier`; and `--compile-extras`, which builds (never runs) the stress test
   (RelWithDebInfo, ThreadSanitizer) and the benchmark (Release, no sanitizers), the configurations
   `--stress` runs them in. It ends with the `--cshim` and `--linux-vm` placeholders, which only print a

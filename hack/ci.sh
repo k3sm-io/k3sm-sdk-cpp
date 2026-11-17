@@ -30,7 +30,7 @@
 #   5. shellcheck over every hack/**/*.sh, and hack/linux-test.sh (the
 #      entry point on a Linux host) refuses on any other host
 #   6. every C and C++ file carries the Apache-2.0 header
-#   7. every file under .github/workflows/ is dormant (fully commented out)
+#   7. no file exists under .github/workflows/ (no CI on GitHub, see CLAUDE.md)
 #   8. the dependency supply-chain check: its self-test, then the live tree
 #   9. the vendored page fixtures match their SHA256SUMS
 #      (hack/verify-fixtures.sh, after its self-test)
@@ -467,24 +467,23 @@ echo "==> license headers (C and C++)"
 bash hack/verify-boilerplate.sh --self-test
 bash hack/verify-boilerplate.sh
 
-echo "==> workflows dormant (.github/workflows)"
-# A workflow file is dormant iff it has no line that is neither blank nor a
-# comment. Every file counts, whatever its name or extension. Deliberately
-# strict: a stray '---' or a byte-order mark makes a file active.
-active=0
-if [ -d .github/workflows ]; then
-	while IFS= read -r -d '' f; do
-		if grep -qEv '^[[:space:]]*(#|$)' "$f"; then
-			echo "    ACTIVE: $f"; active=1
-		fi
-	done < <(find .github/workflows -type f -print0)
+echo "==> no workflow files (.github/workflows)"
+# There is no CI on GitHub: no file may exist under .github/workflows/, of any name,
+# commented out or not. Dotfiles, nested files and symlinks count.
+wf_present() { # <dir>: print each entry under it; exit 0 iff there is one
+	[ -e "$1" ] || [ -L "$1" ] || return 1
+	[ -d "$1" ] || { echo "$1"; return 0; }
+	find "$1" -mindepth 1 \( -type f -o -type l \) | grep .
+}
+if found="$(wf_present .github/workflows)"; then
+	printf '%s\n' "$found" | sed 's/^/    PRESENT: /'
+	echo "FAIL: no workflow file may exist (no CI on GitHub)"; exit 1
 fi
-[ "$active" = 0 ] || { echo "FAIL: workflows must stay fully commented out"; exit 1; }
-# Red-path check, so the predicate above cannot pass vacuously.
-printf '# off\non: push\n' > "$tmp/active.yml"
-printf '# off\n\n  # still off\n' > "$tmp/dormant.yml"
-grep -qEv '^[[:space:]]*(#|$)' "$tmp/active.yml" || { echo "FAIL: predicate missed an active file"; exit 1; }
-! grep -qEv '^[[:space:]]*(#|$)' "$tmp/dormant.yml" || { echo "FAIL: predicate flagged a dormant file"; exit 1; }
+# Red-path check, so the scan above cannot pass vacuously.
+mkdir -p "$tmp/wf/.github/workflows" && printf '# off\n' > "$tmp/wf/.github/workflows/.c.yml"
+wf_present "$tmp/wf/.github/workflows" >/dev/null || { echo "FAIL: the scan missed a commented-out dotfile workflow"; exit 1; }
+mkdir -p "$tmp/wf2/.github" && : > "$tmp/wf2/.github/dependabot.yml"
+! wf_present "$tmp/wf2/.github/workflows" >/dev/null || { echo "FAIL: the scan flagged a repo with no workflows dir"; exit 1; }
 echo "    ok"
 
 echo "==> dependency supply-chain (hack/verify-deps.sh)"
