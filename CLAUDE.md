@@ -1,5 +1,12 @@
 # k3sm C++ SDK
 
+@.claude/rules/native-builds.md
+
+Use the `yurei build` queue via the runtime's executable absolute `YUREI_BIN`; verify native pod placement.
+Preserve BypassGuard and every real human gate; this policy never widens credential, money, release or irreversible authority.
+
+All build and test examples below run through the approved native Darwin pod route; older host exceptions are superseded.
+
 A header-only C++20 client for the k3sm node pressure and headroom API, one CMake target
 (`k3sm::sdk`). It is a leaf: it talks to a k3sm node over the API that node serves and imports no
 code from the other k3sm repositories.
@@ -67,7 +74,7 @@ hack/ci.sh      # the full gate
 - Every C and C++ file starts with the Apache-2.0 header in `hack/boilerplate/boilerplate.cpp.txt`;
   `ci.sh` checks it. CMake and shell files carry the two-line `Copyright` and
   `SPDX-License-Identifier` comment.
-- Workflows under `.github/workflows/` stay fully commented out; `ci.sh` checks it.
+- No workflows may exist under `.github/workflows/`; `ci.sh` checks their absence.
 
 ## Commits
 Conventional Commits per `CONTRIBUTING.md`. Scopes are the top-level directory changed (`include`,
