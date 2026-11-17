@@ -40,6 +40,17 @@ hack/ci.sh      # the full gate
   `FetchContent_Declare`, `ExternalProject_Add`, CPM call or git submodule not listed in
   `hack/deps.allow` with an exact commit sha, and the allow file is empty.
 
+## Containers only, and no CI on GitHub
+
+- **Containers only.** Nothing is installed on the host Mac, for supply-chain safety: no `brew`, no global
+  `go install`/`cargo install`/`pip install`/`npm -g` of a tool, no `curl | sh`, no `sudo` installs. Toolchains
+  and services run in k3sm pods; a tool the gate needs runs in a pod image pinned to an exact version and
+  checksum. When a gate names a missing tool, it gives the pinned command to run in the pod, not on the host.
+- **No CI on GitHub: no GitHub Actions workflows, ever, in any project, and Actions stays disabled; all gates
+  run locally in k3sm pods**, through Yureisha CI (the `yureisha/ci` commit status) or this repo's own gate
+  script, `hack/ci.sh`. No file may exist under `.github/workflows/`, commented out or not. `hack/ci.sh`
+  checks the DCO sign-off on every commit a branch adds.
+
 ## Conventions
 - **C++20, header-only.** The target is `INTERFACE`; it requires `cxx_std_20` of its consumers.
 - **Unity-build safe.** No anonymous namespaces, no `static` free functions or variables at
